@@ -10,3 +10,7 @@ version: 0.1.0
 date-released: 2026-09-03
 license: Apache-2.0
 repository-code: https://github.com/TaN-MM-Org/sparq-triage
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22278041
+    description: "Concept DOI for all versions; resolves to the latest release"
