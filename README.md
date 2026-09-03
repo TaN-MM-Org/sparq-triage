@@ -35,6 +35,37 @@ mu = expected_histogram(site, T_s=5.0, cfg=HBTConfig())
 print(site.g2_0, site.is_good, mu.shape)
 ```
 
+## Analyzing your own data
+
+`analyze_histogram` runs the full conventional pipeline on any measured CW
+HBT histogram (dip centering, re-binning, flat-level normalization,
+multi-start fit) and reports g2(0) with a parametric-bootstrap confidence
+interval that propagates shot noise through every analysis step;
+`analyze_pulsed` does the same for pulsed combs via the peak-area method.
+Neither needs PyTorch.
+
+```python
+from sparq import analyze_histogram
+res = analyze_histogram(delay_ns, counts, T_s=30.0, n_bootstrap=200)
+print(res["g2_0"], (res["g2_0_low"], res["g2_0_high"]),
+      res["single_emitter_confident"])
+```
+
+## Registering your own platform
+
+The built-in priors (NV, hBN, GaN, SiV) are literature-anchored defaults,
+not a limit: `register_platform` adds any emitter with your own
+photophysical ranges, after which it works everywhere a platform name is
+accepted (site sampling, the dataset generators, the triage environment,
+the graph encoder's template).
+
+```python
+from sparq import Platform, register_platform, sample_site
+register_platform(Platform("MyQD", (0.5, 2.0), (20, 400), (0.0, 0.5),
+                           (50, 500), (0.7, 0.99), 0.05, (5, 100), (0.5, 10)))
+site = sample_site(rng, platform="MyQD")
+```
+
 ## What is in the package
 
 ```
@@ -46,6 +77,8 @@ sparq/
   exact.py              numerically exact master-equation g2(tau)
   pulsed.py             pulsed-excitation twin + comb calibration +
                         conventional peak-area analysis
+  analysis.py           g2 analysis of measured data with bootstrap
+                        uncertainties (CW and pulsed; torch-free)
   datasets.py           synthetic acquisition generators + loader for the
                         real sps-quality quantum-dot HBT data
   estimators.py         LM-fit baseline, CNN, surrogate-gradient spiking
