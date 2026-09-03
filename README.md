@@ -51,6 +51,26 @@ print(res["g2_0"], (res["g2_0_low"], res["g2_0_high"]),
       res["single_emitter_confident"])
 ```
 
+## Sequential certification and rigorous intervals
+
+`SPRTCertifier` implements Wald's sequential probability ratio test on
+accumulating HBT histograms with exact Poisson log-likelihoods: acquisition
+stops the moment the evidence crosses the error-rate thresholds, which on
+twin benchmarks certifies bright sites in a fraction of a second instead of
+a fixed 30 s dwell, at the nominal error rates. `profile_likelihood_ci`
+gives a Wilks profile-likelihood confidence interval for g2(0) from the
+exact Poisson likelihood, honest at low counts where linearized fit errors
+are not. Both are torch-free; the plug-in-hypothesis caveat and the
+empirical validation are documented in the module.
+
+```python
+from sparq import SPRTCertifier, profile_likelihood_ci
+cert = SPRTCertifier(site_single, site_pair, alpha=0.05, beta=0.05)
+while cert.update(new_counts, dt) == "continue":
+    ...                                   # keep acquiring
+print(cert.decision, cert.T_total, cert.expected_times())
+```
+
 ## Registering your own platform
 
 The built-in priors (NV, hBN, GaN, SiV) are literature-anchored defaults,
@@ -77,8 +97,10 @@ sparq/
   exact.py              numerically exact master-equation g2(tau)
   pulsed.py             pulsed-excitation twin + comb calibration +
                         conventional peak-area analysis
-  analysis.py           g2 analysis of measured data with bootstrap
-                        uncertainties (CW and pulsed; torch-free)
+  analysis.py           g2 analysis of measured data: bootstrap and
+                        profile-likelihood uncertainties (torch-free)
+  sequential.py         Wald SPRT certifier on exact Poisson likelihoods
+                        (torch-free)
   datasets.py           synthetic acquisition generators + loader for the
                         real sps-quality quantum-dot HBT data
   estimators.py         LM-fit baseline, CNN, surrogate-gradient spiking
