@@ -24,7 +24,8 @@ import numpy as np
 from .datasets import rebin_real, robust_flat_rate
 from .physics import HBTConfig
 from .pulsed import T_REP_NS, calibrate_comb, g2_peak_area
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, minimize
+from scipy.stats import chi2
 
 
 def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None):
@@ -157,3 +158,81 @@ def analyze_pulsed(delay, counts, t_rep: float = T_REP_NS,
                    g2_0_std=float(draws.std(ddof=1)),
                    single_emitter_confident=bool(hi < threshold or lo >= threshold))
     return out
+
+
+def _poisson_nll(hist, mu):
+    mu = np.maximum(mu, 1e-12)
+    return float(np.sum(mu - hist * np.log(mu)))
+
+
+def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
+                          level: float = 0.95, n_grid: int = 41,
+                          g2_max: float = 1.5):
+    """Profile-likelihood confidence interval for g2(0) (Wilks/likelihood
+    ratio), from the exact Poisson likelihood of the histogram.
+
+    For each value of g2(0) on a grid the Poisson negative log-likelihood
+    of the three-level model is minimized over all nuisance parameters
+    (lifetimes, bunching time, normalization) under the constraint
+    g2(0) = 1 - d + a; the interval is the set where the profile deviance
+    2 [NLL(g2) - NLL_min] stays below the chi-square(1) quantile of
+    ``level`` (Wilks' theorem).  Unlike the parametric bootstrap this
+    needs no resampling, and unlike the fit's linearized errors it remains
+    honest for asymmetric likelihoods at low counts.
+
+    Returns a dict with g2_hat (profile minimum), lo, hi (interval
+    bounds, NaN when unbounded on that side within the grid), level, and
+    the (grid, deviance) profile for plotting.
+    """
+    if cfg is None:
+        cfg = HBTConfig()
+    hist = np.asarray(hist, float)
+    flat = (0.5 * r_hat) ** 2 * (cfg.bin_width * 1e-9) * T_s
+    if flat <= 0 or hist.sum() < 5:
+        raise ValueError("histogram carries too little signal to profile")
+    tau = np.abs(cfg.bin_centers)
+
+    def nll_free(theta, g2):
+        d, t1, t2, c0 = theta
+        a = g2 - 1.0 + d
+        mu = flat * c0 * (1.0 - d * np.exp(-tau / t1) + a * np.exp(-tau / t2))
+        return _poisson_nll(hist, mu)
+
+    bounds_t = [(0.3, 80.0), (50.0, 800.0), (0.01, 10.0)]
+    grid = np.linspace(0.0, g2_max, int(n_grid))
+    prof = np.empty_like(grid)
+    warm = None
+    c0g = max(float(np.median(hist)) / max(flat, 1e-12), 0.1)
+    for i, g2 in enumerate(grid):
+        d_lo = max(0.0, 1.0 - g2)          # a = g2 - 1 + d >= 0
+        starts = [np.array([min(max(0.7, d_lo), 1.0), 15.0, 250.0, c0g])]
+        if warm is not None:
+            starts.insert(0, warm)
+        best = None
+        for x0 in starts:
+            x0 = np.clip(x0, [d_lo, 0.3, 50.0, 0.01], [1.0, 80.0, 800.0, 10.0])
+            res = minimize(nll_free, x0, args=(g2,), method="L-BFGS-B",
+                           bounds=[(d_lo, 1.0)] + bounds_t)
+            if best is None or res.fun < best.fun:
+                best = res
+        prof[i] = best.fun
+        warm = best.x
+    i0 = int(np.argmin(prof))
+    dev = 2.0 * (prof - prof[i0])
+    crit = float(chi2.ppf(level, 1))
+    inside = dev <= crit
+
+    def _edge(lo_side: bool):
+        idx = range(i0, -1, -1) if lo_side else range(i0, len(grid))
+        prev = i0
+        for j in idx:
+            if not inside[j]:
+                # linear interpolation between prev (inside) and j (outside)
+                x0, x1 = grid[prev], grid[j]
+                y0, y1 = dev[prev], dev[j]
+                return float(x0 + (crit - y0) * (x1 - x0) / max(y1 - y0, 1e-12))
+            prev = j
+        return float("nan")                # unbounded within the grid
+
+    return dict(g2_hat=float(grid[i0]), lo=_edge(True), hi=_edge(False),
+                level=float(level), grid=grid, deviance=dev)
