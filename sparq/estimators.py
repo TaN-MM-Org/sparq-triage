@@ -19,40 +19,7 @@ torch.set_num_threads(2)
 # 1. Curve-fit baseline (the conventional workflow)
 # ----------------------------------------------------------------------
 
-def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None):
-    """Conventional pipeline: normalize by the singles-rate flat level and
-    LM-fit the three-level model with multiple starts (best practice);
-    returns (g2_0_hat, ok_flag)."""
-    flat = (0.5 * r_hat) ** 2 * (cfg.bin_width * 1e-9) * T_s
-    if flat <= 0 or hist.sum() < 5:
-        return 1.0, False
-    y = hist / max(flat, 1e-12)
-    tau = cfg.bin_centers
-    sd = np.sqrt(np.maximum(hist, 1)) / flat
-
-    def model(t, d, t1, a, t2, c0):
-        return c0 * (1.0 - d * np.exp(-np.abs(t) / t1)
-                     + a * np.exp(-np.abs(t) / t2))
-
-    if starts is None:
-        starts = [(0.7, 8.0, 0.1), (0.7, 15.0, 0.6),
-                  (0.7, 25.0, 0.1), (0.3, 15.0, 0.6)]
-    best = None
-    c0g = max(np.median(y), 0.1)
-    bounds = ([0.0, 0.3, 0.0, 50.0, 0.01], [1.0, 80.0, 3.0, 800.0, 10.0])
-    for dg, t1g, ag in starts:
-        try:
-            popt, _ = curve_fit(model, tau, y, p0=(dg, t1g, ag, 250.0, c0g),
-                                sigma=sd, bounds=bounds, maxfev=3000)
-            r = float(np.sum(((model(tau, *popt) - y) / sd) ** 2))
-            if best is None or r < best[0]:
-                best = (r, popt)
-        except Exception:
-            continue
-    if best is None:
-        return 1.0, False
-    d, t1, a, t2, c0 = best[1]
-    return float(np.clip(1.0 - d + a, 0, 3)), True
+from .analysis import fit_g2_histogram  # noqa: F401  (moved; torch-free home)
 
 
 # ----------------------------------------------------------------------

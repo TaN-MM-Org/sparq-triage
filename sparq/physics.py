@@ -163,6 +163,45 @@ PLATFORMS = {
 }
 
 
+def register_platform(platform: Platform, overwrite: bool = False) -> Platform:
+    """Register a user-defined emitter platform for use everywhere a platform
+    name is accepted (sample_site, the dataset generators, the triage
+    environment, the graph encoder's template).
+
+    Provide literature-anchored ranges for your emitter: tau1_rng and
+    tau2_rng in ns, a_rng dimensionless, rate_rng in kcps (both detectors),
+    rho_rng the signal fraction, blink_p the blinking probability and
+    blink_ton_rng / blink_toff_rng in ms.  Every range must be a (low, high)
+    pair with 0 < low <= high; rho must lie in (0, 1].
+
+    Returns the platform for chaining; raises ValueError on an invalid
+    definition or a duplicate name unless overwrite=True.
+    """
+    if not isinstance(platform, Platform):
+        raise ValueError("register_platform expects a Platform instance")
+    if platform.name in PLATFORMS and not overwrite:
+        raise ValueError(f"platform {platform.name!r} already exists; pass overwrite=True to replace it")
+    for field_name in ("tau1_rng", "tau2_rng", "a_rng", "rate_rng", "rho_rng",
+                       "blink_ton_rng", "blink_toff_rng"):
+        rng = getattr(platform, field_name)
+        try:
+            lo, hi = float(rng[0]), float(rng[1])
+        except (TypeError, IndexError, ValueError):
+            raise ValueError(f"{field_name} must be a (low, high) pair") from None
+        if not (lo <= hi):
+            raise ValueError(f"{field_name}: low must not exceed high")
+        if field_name != "a_rng" and not lo > 0:
+            raise ValueError(f"{field_name}: bounds must be positive")
+        if field_name == "a_rng" and lo < 0:
+            raise ValueError("a_rng: bounds must be non-negative")
+    if not (0.0 < platform.rho_rng[0] and platform.rho_rng[1] <= 1.0):
+        raise ValueError("rho_rng must lie in (0, 1]")
+    if not (0.0 <= platform.blink_p <= 1.0):
+        raise ValueError("blink_p must lie in [0, 1]")
+    PLATFORMS[platform.name] = platform
+    return platform
+
+
 @dataclass
 class EmitterSite:
     """One candidate site in a confocal field."""

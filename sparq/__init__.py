@@ -35,19 +35,23 @@ from .physics import (
     g2_zero,
     sample_event_stream,
     sample_histogram,
+    register_platform,
     sample_site,
     simulate_photon_stream,
 )
+from .analysis import analyze_histogram, analyze_pulsed, fit_g2_histogram
 from .exact import effective_params, g2_exact, liouvillian, rates_from_site, steady_state
 from .pulsed import calibrate_comb, expected_hist_pulsed, g2_peak_area, peak_shape
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
     "Platform", "correlate", "expected_histogram", "g2_measured",
     "g2_three_level", "g2_zero", "sample_event_stream", "sample_histogram",
     "sample_site", "simulate_photon_stream",
+    "register_platform",
+    "analyze_histogram", "analyze_pulsed", "fit_g2_histogram",
     "effective_params", "g2_exact", "liouvillian", "rates_from_site",
     "steady_state",
     "calibrate_comb", "expected_hist_pulsed", "g2_peak_area", "peak_shape",
