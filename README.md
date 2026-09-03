@@ -1,7 +1,7 @@
 # SPARQ
 
 [![Tests](https://github.com/TaN-MM-Org/sparq-triage/actions/workflows/tests.yml/badge.svg)](https://github.com/TaN-MM-Org/sparq-triage/actions/workflows/tests.yml)
-[![PyPI](https://img.shields.io/pypi/v/sparq-triage)](https://pypi.org/project/sparq-triage/)
+[![PyPI](https://img.shields.io/pypi/v/sparq-triage?label=PyPI&color=blue)](https://pypi.org/project/sparq-triage/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22278041-blue)](https://doi.org/10.5281/zenodo.22278041)
 
