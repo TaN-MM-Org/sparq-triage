@@ -6,8 +6,8 @@ authors:
     given-names: Tanvir Mahmud
     orcid: "https://orcid.org/0000-0002-4550-3248"
     affiliation: BRAC University
-version: 0.3.0
-date-released: 2026-09-03
+version: 0.4.0
+date-released: 2026-09-05
 license: Apache-2.0
 repository-code: https://github.com/TaN-MM-Org/sparq-triage
 identifiers:

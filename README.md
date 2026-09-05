@@ -71,6 +71,30 @@ while cert.update(new_counts, dt) == "continue":
 print(cert.decision, cert.T_total, cert.expected_times())
 ```
 
+## Exact closed-form corrections (new in v0.4)
+
+`background_corrected_g2` inverts the Poissonian-background map
+g2_meas = 1 + rho^2 (g2_true - 1) (Brouri et al., Opt. Lett. 25, 1294
+(2000)) -- exactly the forward model the package's own `g2_zero(...,
+rho)` applies, so the round trip is machine-exact and asserted in the
+tests; the correction maps confidence-interval endpoints through the
+same affine transform, truncates at the physical floor g2 = 0 without
+hiding the untruncated value, and refuses rho outside (0, 1].
+`signal_fraction` builds rho from measured signal and background rates.
+`deadtime_corrected_rate` inverts the non-paralyzable dead-time
+throughput r_meas = r/(1 + r tau_d) -- the exact renewal-theory rate of
+the greedy dead-time pass in the Monte-Carlo detector chain, validated
+against it statistically -- and refuses measured rates at or beyond the
+saturation rate instead of extrapolating. All three are torch-free.
+
+```python
+from sparq import background_corrected_g2, signal_fraction
+
+rho = signal_fraction(signal_rate, background_rate)
+res = background_corrected_g2(g2_measured, rho, ci=(lo, hi))
+print(res["g2_corrected"], res["ci"])
+```
+
 ## Registering your own platform
 
 The built-in priors (NV, hBN, GaN, SiV) are literature-anchored defaults,
@@ -98,7 +122,8 @@ sparq/
   pulsed.py             pulsed-excitation twin + comb calibration +
                         conventional peak-area analysis
   analysis.py           g2 analysis of measured data: bootstrap and
-                        profile-likelihood uncertainties (torch-free)
+                        profile-likelihood uncertainties, exact
+                        background and dead-time corrections (torch-free)
   sequential.py         Wald SPRT certifier on exact Poisson likelihoods
                         (torch-free)
   datasets.py           synthetic acquisition generators + loader for the
@@ -126,7 +151,8 @@ The suite pins the physics to exact references: the two-exponential g2 law
 against the master-equation eigen-decomposition, the closed-form IRF
 convolution against brute-force quadrature, Poisson statistics of the
 histogram twin, comb calibration and peak-area recovery, sum-tree replay
-proportionality, and the shape/gradient contracts of the estimators, the
+proportionality, the exact background/dead-time correction round
+trips, and the shape/gradient contracts of the estimators, the
 differentiable protocol twin and the triage environment. It runs in CI on
 every push and pull request.
 
