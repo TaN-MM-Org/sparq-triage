@@ -39,12 +39,15 @@ from .physics import (
     sample_site,
     simulate_photon_stream,
 )
-from .analysis import analyze_histogram, analyze_pulsed, fit_g2_histogram, profile_likelihood_ci
+from .analysis import (analyze_histogram, analyze_pulsed,
+                       background_corrected_g2, deadtime_corrected_rate,
+                       fit_g2_histogram, profile_likelihood_ci,
+                       signal_fraction)
 from .sequential import SPRTCertifier
 from .exact import effective_params, g2_exact, liouvillian, rates_from_site, steady_state
 from .pulsed import calibrate_comb, expected_hist_pulsed, g2_peak_area, peak_shape
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
@@ -54,6 +57,7 @@ __all__ = [
     "register_platform",
     "analyze_histogram", "analyze_pulsed", "fit_g2_histogram",
     "profile_likelihood_ci", "SPRTCertifier",
+    "background_corrected_g2", "deadtime_corrected_rate", "signal_fraction",
     "effective_params", "g2_exact", "liouvillian", "rates_from_site",
     "steady_state",
     "calibrate_comb", "expected_hist_pulsed", "g2_peak_area", "peak_shape",

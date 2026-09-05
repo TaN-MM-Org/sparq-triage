@@ -236,3 +236,90 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
 
     return dict(g2_hat=float(grid[i0]), lo=_edge(True), hi=_edge(False),
                 level=float(level), grid=grid, deviance=dev)
+
+
+# ----------------------------------------------------------------------
+# Exact closed-form corrections (v0.4)
+# ----------------------------------------------------------------------
+
+def signal_fraction(signal_rate, background_rate):
+    """rho = S / (S + B): the signal fraction entering the background
+    correction. Rates in any common unit; both must be non-negative and
+    their sum positive."""
+    S = float(signal_rate)
+    B = float(background_rate)
+    if S < 0.0 or B < 0.0 or S + B <= 0.0:
+        raise ValueError("rates must be non-negative with S + B > 0")
+    return S / (S + B)
+
+
+def background_corrected_g2(g2_meas, rho, ci=None):
+    """Exact background correction of a measured g2(0).
+
+    A Poissonian background at signal fraction rho = S/(S+B) maps the
+    true correlation to the measured one as
+
+        g2_meas = 1 + rho^2 (g2_true - 1)
+
+    (Brouri, Beveratos, Poizat and Grangier, Opt. Lett. 25, 1294
+    (2000)) -- exactly the forward map this package's own
+    ``g2_zero(..., rho)`` applies. This function is its algebraic
+    inverse,
+
+        g2_true = 1 + (g2_meas - 1) / rho^2 ,
+
+    so correcting the package's forward model recovers the rho = 1
+    value to machine precision (asserted in the tests, not stated).
+    The map is affine and increasing in g2_meas, so a confidence
+    interval transforms endpoint-by-endpoint: pass ``ci=(lo, hi)`` to
+    get the corrected interval.
+
+    rho must lie in (0, 1]; a corrected value below 0 is truncated to
+    0 (a measured histogram can fluctuate below the physical floor)
+    and the untruncated value is returned alongside.
+
+    Returns dict(g2_corrected, g2_uncorrected_inverse, ci).
+    """
+    rho = float(rho)
+    if not (0.0 < rho <= 1.0):
+        raise ValueError("rho must lie in (0, 1]")
+    raw = 1.0 + (float(g2_meas) - 1.0) / rho ** 2
+    out = dict(g2_corrected=max(raw, 0.0),
+               g2_uncorrected_inverse=raw, ci=None)
+    if ci is not None:
+        lo, hi = (float(ci[0]), float(ci[1]))
+        if lo > hi:
+            raise ValueError("ci must be (lo, hi) with lo <= hi")
+        out["ci"] = (max(1.0 + (lo - 1.0) / rho ** 2, 0.0),
+                     max(1.0 + (hi - 1.0) / rho ** 2, 0.0))
+    return out
+
+
+def deadtime_corrected_rate(r_meas_cps, dead_time_ns):
+    """Exact non-paralyzable dead-time correction of a count rate.
+
+    A detector that goes blind for tau_d after each accepted count maps
+    the true rate to the measured one as r_meas = r / (1 + r tau_d)
+    (non-paralyzable model; the package's Monte-Carlo detector chain
+    implements exactly this greedy dead-time pass). The inverse is
+
+        r = r_meas / (1 - r_meas tau_d),
+
+    exact, and refused when r_meas tau_d >= 1 (a measured rate at or
+    above the saturation rate 1/tau_d is inconsistent with the model
+    rather than something to extrapolate). Anchors in the tests: the
+    round trip is exact to machine precision, and the forward formula
+    matches the Monte-Carlo detector chain's throughput on a Poisson
+    stream within statistical error.
+    """
+    r = float(r_meas_cps)
+    td = float(dead_time_ns) * 1e-9
+    if r < 0.0 or td < 0.0:
+        raise ValueError("rate and dead time must be non-negative")
+    x = r * td
+    if x >= 1.0:
+        raise ValueError(
+            f"measured rate {r:.3g} cps is at or above the saturation "
+            f"rate 1/tau_d = {1.0 / td:.3g} cps of the non-paralyzable "
+            "model; the correction has no solution there")
+    return r / (1.0 - x)
