@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0 (2026-09-10)
+
+### Added
+
+- `bayesian_g2` / `G2Posterior`: exact-Poisson Bayesian posterior of
+  the raw central-window g2 ratio. Conjugate Gamma updates on the
+  central and reference per-bin rates (Jeffreys prior by default)
+  give a closed-form scaled beta-prime posterior for the ratio:
+  exact density, CDF, quantiles, equal-tailed credible intervals,
+  posterior mean/median/mode, and the triage verdict probability
+  P[g2 < 1/2 | data]. Acquisition time and detection rates cancel in
+  the ratio, so none are needed. The estimand (window-averaged raw
+  g2, an upper bound on g2(0)) is stated plainly; dip-shape-aware
+  inference remains `profile_likelihood_ci`.
+- Anchors: hand-built law against `scipy.stats.betaprime` to 1e-12;
+  unit mass and closed-form moments by quadrature; agreement with a
+  direct numerical marginalization of the exact Poisson likelihood
+  over the nuisance rate; seeded Monte-Carlo Gamma-ratio CDF
+  agreement; nominal credible-interval coverage on twin-generated
+  histograms; verdict ordering of single- versus two-emitter sites.
+
 ## 0.4.0 (2026-09-05)
 
 ### Added

@@ -95,6 +95,38 @@ res = background_corrected_g2(g2_measured, rho, ci=(lo, hi))
 print(res["g2_corrected"], res["ci"])
 ```
 
+## Exact Bayesian posterior for g2(0) (new in v0.5)
+
+`bayesian_g2` completes the inferential toolbox: alongside the
+bootstrap (shot noise through the full pipeline) and the Wilks profile
+likelihood (frequentist, model-based), it returns the EXACT
+finite-count Bayesian posterior of the model-free quantity papers
+quote first -- the raw central-window g2, the zero-delay coincidence
+rate over the flat level. With independent Gamma priors on the two
+Poisson rates (Jeffreys by default) the posterior of the ratio is a
+scaled beta-prime law in closed form: density, quantiles,
+equal-tailed credible intervals and the triage verdict probability
+P[g2 < 1/2 | data] are exact expressions in four counts -- no
+sampling, no optimizer, no asymptotics, and no acquisition time
+needed (it cancels in the ratio). The docstring states the estimand
+honestly: a window average sits on top of the dip, so it upper-bounds
+g2(0); dip-shape-aware inference stays with `profile_likelihood_ci`.
+
+```python
+from sparq import bayesian_g2
+post = bayesian_g2(counts_on_grid)         # Jeffreys prior, 1-ns window
+lo, hi = post.credible_interval(0.95)
+print(post.median(), (lo, hi), post.prob_below(0.5))
+```
+
+Anchors in the test suite: the hand-built beta-prime law against
+SciPy's independent implementation to 1e-12; unit mass and closed-form
+moments by quadrature; the closed form against direct numerical
+marginalization of the exact Poisson likelihood; Monte-Carlo
+Gamma-ratio agreement; nominal credible-interval coverage on
+twin-generated histograms; and the single-versus-two-emitter verdict
+ordering.
+
 ## Registering your own platform
 
 The built-in priors (NV, hBN, GaN, SiV) are literature-anchored defaults,
@@ -126,6 +158,9 @@ sparq/
                         background and dead-time corrections (torch-free)
   sequential.py         Wald SPRT certifier on exact Poisson likelihoods
                         (torch-free)
+  bayes.py              exact-Poisson Bayesian posterior of the raw
+                        central-window g2 (conjugate closed form,
+                        torch-free)
   datasets.py           synthetic acquisition generators + loader for the
                         real sps-quality quantum-dot HBT data
   estimators.py         LM-fit baseline, CNN, surrogate-gradient spiking
@@ -152,7 +187,9 @@ against the master-equation eigen-decomposition, the closed-form IRF
 convolution against brute-force quadrature, Poisson statistics of the
 histogram twin, comb calibration and peak-area recovery, sum-tree replay
 proportionality, the exact background/dead-time correction round
-trips, and the shape/gradient contracts of the estimators, the
+trips, the closed-form Bayesian g2 posterior against SciPy's
+independent beta-prime implementation and a direct Poisson
+marginalization, and the shape/gradient contracts of the estimators, the
 differentiable protocol twin and the triage environment. It runs in CI on
 every push and pull request.
 
