@@ -44,6 +44,35 @@ interval that propagates shot noise through every analysis step;
 `analyze_pulsed` does the same for pulsed combs via the peak-area method.
 Neither needs PyTorch.
 
+New in v0.6, the pipeline adapts to *your* emitter and instrument
+instead of assuming NV-scale defaults:
+
+- `load_hbt_csv` / `save_hbt_csv`: a documented two-column file contract
+  (`delay_ns,counts`) with an exact round trip and refusals for
+  malformed files, so a measured histogram enters the pipeline through
+  a stable interface.
+- Configurable lifetime windows: `t1_bounds` / `t2_bounds` (ns) on
+  `analyze_histogram`, `fit_g2_histogram` and `profile_likelihood_ci`.
+  The defaults are the NV-scale window used since v0.1; a sub-0.3 ns
+  quantum dot or a 5 ns bunching shoulder needs its own window, and a
+  window that excludes the truth silently rails the fit -- the test
+  suite demonstrates both the failure and the recovery.
+- The fit model is now the *physical* parameterization (dip depth
+  rho^2 times both exponentials) and includes the instrument response
+  (the closed-form Gaussian-convolved exponential, at `cfg.sigma_irf`),
+  so the estimate targets the IRF-free g2(0) rather than the softened
+  dip the raw histogram shows.
+- `profile_likelihood_ci(..., c0_prior=(1.0, sd))`: with the flat level
+  free, a slow bunching shoulder trades against the normalization and
+  the histogram alone honestly cannot break the tie (the interval says
+  so by being wide). The counters can: pass `r_hat` from the measured
+  singles rates and their relative precision as `c0_prior`, and the
+  interval tightens to what the data genuinely support.
+- `register_platform` remains the entry point for making your emitter a
+  first-class citizen everywhere a platform name is accepted, and
+  `load_fisequr` now takes the dataset directory explicitly instead of
+  assuming any machine's layout.
+
 ```python
 from sparq import analyze_histogram
 res = analyze_histogram(delay_ns, counts, T_s=30.0, n_bootstrap=200)

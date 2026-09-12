@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.6.0 (2026-09-12)
+
+Adaptability release: the analysis pipeline no longer assumes an
+NV-scale emitter or a negligible instrument response.
+
+### Added
+
+- `load_hbt_csv` / `save_hbt_csv`: documented `delay_ns,counts` file
+  contract for measured histograms -- exact round trip, refusals for
+  wrong headers, field counts, negative counts and non-increasing
+  delay axes.
+- `t1_bounds` / `t2_bounds` on `analyze_histogram`,
+  `fit_g2_histogram` and `profile_likelihood_ci`: the lifetime
+  windows the fits search, defaulting to the historical NV-scale
+  window, validated on entry. A fast-emitter test (tau1 = 0.15 ns,
+  tau2 = 5 ns) demonstrates the default-window failure and the
+  custom-window recovery.
+- `c0_prior` on `profile_likelihood_ci`: an optional Gaussian
+  constraint on the flat-level normalization, representing the
+  independently measured singles rates. Without it the interval is
+  honestly wide -- a slow bunching shoulder trades against the
+  normalization, a real near-degeneracy of the histogram alone,
+  probed explicitly during development and now documented.
+
+### Changed
+
+- The LM fit and the profile likelihood now use the physical
+  parameterization (dip depth rho^2 multiplying both exponentials,
+  g2(0) = 1 - rho^2). The previous 1 - d e1 + a e2 form capped d at
+  1, which biased g2(0) upward for any emitter with a strong
+  bunching shoulder, and hid a (d, a) ridge behind the cap.
+- Both fit models now include the instrument response (closed-form
+  Gaussian-convolved exponentials at `cfg.sigma_irf`), so the
+  estimand is the IRF-free g2(0); a test separates the two where the
+  IRF matters.
+- `load_fisequr` requires the dataset directory explicitly (the
+  previous default was one machine's path) and raises with an
+  explanation when it is missing.
+
 ## 0.5.0 (2026-09-10)
 
 ### Added
