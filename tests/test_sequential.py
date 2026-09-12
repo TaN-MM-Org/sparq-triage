@@ -81,16 +81,30 @@ def test_certifier_input_validation():
 
 
 def test_profile_ci_covers_truth_and_shrinks():
+    """With the flat level pinned by the independently measured singles
+    rate (r_hat from the counters, c0_prior at its precision), the CI
+    covers the IRF-free truth and tightens with acquisition time.
+    Without the prior the interval is honestly WIDER -- the bunching
+    amplitude trades against the normalization, a real near-degeneracy
+    of the histogram alone -- but still covers."""
     cfg = HBTConfig()
     rng = np.random.default_rng(0)
     site = EmitterSite(dict(PARAMS), 1)
     widths = []
+    hists = {}
     for T in (10.0, 60.0):
         hist = rng.poisson(expected_histogram(site, T, cfg)).astype(float)
-        r = profile_likelihood_ci(hist, T, PARAMS["rate_kcps"] * 1e3, cfg)
+        hists[T] = hist
+        r = profile_likelihood_ci(hist, T, PARAMS["rate_kcps"] * 1e3, cfg,
+                                  c0_prior=(1.0, 0.01))
         assert r["lo"] <= site.g2_0 <= r["hi"]
         widths.append(r["hi"] - r["lo"])
     assert widths[1] < 0.5 * widths[0]                  # more data, tighter CI
+    # normalization free: wider, still covering
+    r_free = profile_likelihood_ci(hists[60.0], 60.0,
+                                   PARAMS["rate_kcps"] * 1e3, cfg)
+    assert r_free["lo"] <= site.g2_0 <= r_free["hi"]
+    assert (r_free["hi"] - r_free["lo"]) > widths[1]
 
 
 def test_profile_ci_separates_single_from_pair():
@@ -99,8 +113,9 @@ def test_profile_ci_separates_single_from_pair():
     single, pair = _sites()
     h1 = rng.poisson(expected_histogram(single, 30.0, cfg)).astype(float)
     h2 = rng.poisson(expected_histogram(pair, 30.0, cfg)).astype(float)
-    r1 = profile_likelihood_ci(h1, 30.0, PARAMS["rate_kcps"] * 1e3, cfg)
-    r2 = profile_likelihood_ci(h2, 30.0, PARAMS["rate_kcps"] * 1e3, cfg)
+    kw = dict(c0_prior=(1.0, 0.01))
+    r1 = profile_likelihood_ci(h1, 30.0, PARAMS["rate_kcps"] * 1e3, cfg, **kw)
+    r2 = profile_likelihood_ci(h2, 30.0, PARAMS["rate_kcps"] * 1e3, cfg, **kw)
     assert r1["hi"] < 0.5                               # certified single
     assert r2["lo"] > 0.4                               # excluded as single
     assert r2["lo"] <= pair.g2_0 <= r2["hi"]
