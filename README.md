@@ -3,241 +3,133 @@
 [![Tests](https://github.com/TaN-MM-Org/sparq-triage/actions/workflows/tests.yml/badge.svg)](https://github.com/TaN-MM-Org/sparq-triage/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/sparq-triage?label=PyPI&color=blue)](https://pypi.org/project/sparq-triage/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22278041-blue)](https://doi.org/10.5281/zenodo.22278041)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22278040-blue)](https://doi.org/10.5281/zenodo.22278040)
 
-**S**piking **P**hysics-in-the-loop **A**utonomous **R**einforcement triage
-of **Q**uantum emitters: the installable `sparq` package behind the manuscript
-*"Closed-loop, event-driven machine learning for autonomous triage of
-single-photon emitters."* The manuscript's companion repository,
-[a-spiking-RL-triage-of-solid-state-single-photon-emitters](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters),
-holds the experiment scripts, figure scripts and results that reproduce the
-paper; this repository is the software's home for development, releases and
-support.
+Is this light source emitting one photon at a time? That question --
+the standard test for single-photon emitters, measured as a dip in
+the coincidence histogram of a two-detector (HBT) experiment --
+usually costs a long dwell at every candidate site. `sparq` answers
+it faster and more rigorously: exact statistical analysis of measured
+histograms with honest uncertainties, sequential tests that stop the
+moment the data suffice, and a machine-learning layer that learns to
+triage many sites efficiently. The installable package behind the
+manuscript *"Closed-loop, event-driven machine learning for
+autonomous triage of single-photon emitters"*; the
+[companion repository](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters)
+reproduces the paper itself.
 
-## Installation
+## Install
 
 ```bash
 pip install sparq-triage        # physics core (numpy, scipy)
 pip install sparq-triage[ml]    # adds PyTorch for the estimators, twin and RL
 ```
 
-The core (`sparq.physics`, `sparq.exact`, `sparq.pulsed`) imports without
-PyTorch: the analytic HBT correlation functions, the exact-statistics
-histogram twin, the master-equation reference and the pulsed comb analysis.
+The core -- analytic correlation functions, the exact-statistics
+histogram twin, master-equation reference, pulsed analysis, and every
+analysis tool below -- imports without PyTorch.
 
-```python
-import numpy as np
-from sparq import HBTConfig, sample_site, expected_histogram
+## Analyze your own measurement
 
-rng = np.random.default_rng(0)
-site = sample_site(rng, platform="NV")     # literature-anchored priors
-mu = expected_histogram(site, T_s=5.0, cfg=HBTConfig())
-print(site.g2_0, site.is_good, mu.shape)
-```
+`analyze_histogram` runs the full conventional pipeline on any
+measured CW HBT histogram (dip centering, re-binning, normalization,
+multi-start fit) and reports g2(0) with a bootstrap confidence
+interval that propagates shot noise through every step;
+`analyze_pulsed` does the same for pulsed data via peak areas.
 
-## Analyzing your own data
+The pipeline adapts to *your* emitter and instrument (v0.6) instead
+of assuming the defaults it was born with:
 
-`analyze_histogram` runs the full conventional pipeline on any measured CW
-HBT histogram (dip centering, re-binning, flat-level normalization,
-multi-start fit) and reports g2(0) with a parametric-bootstrap confidence
-interval that propagates shot noise through every analysis step;
-`analyze_pulsed` does the same for pulsed combs via the peak-area method.
-Neither needs PyTorch.
+- `load_hbt_csv` / `save_hbt_csv`: a documented two-column file
+  contract (`delay_ns,counts`) with an exact round trip and refusals
+  for malformed files.
+- Configurable lifetime windows (`t1_bounds` / `t2_bounds`): the
+  defaults suit NV-center-scale emitters; a much faster quantum dot
+  or a slow bunching shoulder needs its own window, and a window that
+  excludes the truth silently rails a fit -- the tests demonstrate
+  both the failure and the recovery.
+- The fit model is the physical parameterization (dip depth
+  multiplying both exponentials) and includes the instrument response
+  (closed-form Gaussian-convolved exponentials at `cfg.sigma_irf`),
+  so the estimate targets the true g2(0), not the softened dip the
+  raw histogram shows.
+- `register_platform` makes your emitter a first-class citizen
+  everywhere a platform name is accepted; the built-in priors (NV,
+  hBN, GaN, SiV) are literature-anchored defaults, not a limit.
 
-New in v0.6, the pipeline adapts to *your* emitter and instrument
-instead of assuming NV-scale defaults:
+## Four routes to an uncertainty, each honest about what it assumes
 
-- `load_hbt_csv` / `save_hbt_csv`: a documented two-column file contract
-  (`delay_ns,counts`) with an exact round trip and refusals for
-  malformed files, so a measured histogram enters the pipeline through
-  a stable interface.
-- Configurable lifetime windows: `t1_bounds` / `t2_bounds` (ns) on
-  `analyze_histogram`, `fit_g2_histogram` and `profile_likelihood_ci`.
-  The defaults are the NV-scale window used since v0.1; a sub-0.3 ns
-  quantum dot or a 5 ns bunching shoulder needs its own window, and a
-  window that excludes the truth silently rails the fit -- the test
-  suite demonstrates both the failure and the recovery.
-- The fit model is now the *physical* parameterization (dip depth
-  rho^2 times both exponentials) and includes the instrument response
-  (the closed-form Gaussian-convolved exponential, at `cfg.sigma_irf`),
-  so the estimate targets the IRF-free g2(0) rather than the softened
-  dip the raw histogram shows.
-- `profile_likelihood_ci(..., c0_prior=(1.0, sd))`: with the flat level
-  free, a slow bunching shoulder trades against the normalization and
-  the histogram alone honestly cannot break the tie (the interval says
-  so by being wide). The counters can: pass `r_hat` from the measured
-  singles rates and their relative precision as `c0_prior`, and the
-  interval tightens to what the data genuinely support.
-- `register_platform` remains the entry point for making your emitter a
-  first-class citizen everywhere a platform name is accepted, and
-  `load_fisequr` now takes the dataset directory explicitly instead of
-  assuming any machine's layout.
+- **Bootstrap** (`analyze_histogram`): shot noise propagated through
+  the full pipeline.
+- **Profile likelihood** (`profile_likelihood_ci`): a
+  Wilks confidence interval from the exact Poisson likelihood, honest
+  at low counts where linearized errors are not. With the
+  normalization free, a slow bunching shoulder trades against the
+  flat level -- a real near-degeneracy of the histogram alone, and
+  the interval says so by being wide; pass the independently measured
+  singles rates as `c0_prior` and it tightens to what the data
+  genuinely support.
+- **Exact Bayesian posterior** (`bayesian_g2`): the closed-form
+  finite-count posterior of the raw central-window g2 -- density,
+  quantiles, credible intervals and the verdict probability
+  P[g2 < 1/2 | data] as exact expressions in four counts, no
+  sampling, no asymptotics. The estimand (a window average, an upper
+  bound on g2(0)) is stated plainly.
+- **Sequential certification** (`SPRTCertifier`): Wald's sequential
+  test on accumulating histograms -- acquisition stops the moment the
+  evidence crosses the chosen error rates, certifying bright sites in
+  a fraction of the fixed dwell.
 
-```python
-from sparq import analyze_histogram
-res = analyze_histogram(delay_ns, counts, T_s=30.0, n_bootstrap=200)
-print(res["g2_0"], (res["g2_0_low"], res["g2_0_high"]),
-      res["single_emitter_confident"])
-```
+Exact closed-form corrections complete the toolbox:
+`background_corrected_g2` inverts the Poissonian-background map (the
+same forward model the package's own twin applies, so the round trip
+is machine-exact), `signal_fraction` builds its input from measured
+rates, and `deadtime_corrected_rate` inverts detector dead-time,
+refusing rates at or beyond saturation instead of extrapolating.
 
-## Sequential certification and rigorous intervals
+## The machine-learning layer (optional)
 
-`SPRTCertifier` implements Wald's sequential probability ratio test on
-accumulating HBT histograms with exact Poisson log-likelihoods: acquisition
-stops the moment the evidence crosses the error-rate thresholds, which on
-twin benchmarks certifies bright sites in a fraction of a second instead of
-a fixed 30 s dwell, at the nominal error rates. `profile_likelihood_ci`
-gives a Wilks profile-likelihood confidence interval for g2(0) from the
-exact Poisson likelihood, honest at low counts where linearized fit errors
-are not. Both are torch-free; the plug-in-hypothesis caveat and the
-empirical validation are documented in the module.
+With the `[ml]` extra: neural estimators (CNN and spiking network)
+trained physics-in-the-loop, a differentiable twin of the whole
+measurement protocol, a closed-loop triage environment with a soft
+actor-critic agent and prioritized replay, and a graph encoder for
+cross-platform transfer. All of it consumes the same exact-statistics
+histogram twin the physics core provides.
 
-```python
-from sparq import SPRTCertifier, profile_likelihood_ci
-cert = SPRTCertifier(site_single, site_pair, alpha=0.05, beta=0.05)
-while cert.update(new_counts, dt) == "continue":
-    ...                                   # keep acquiring
-print(cert.decision, cert.T_total, cert.expected_times())
-```
+## How it is checked
 
-## Exact closed-form corrections (new in v0.4)
-
-`background_corrected_g2` inverts the Poissonian-background map
-g2_meas = 1 + rho^2 (g2_true - 1) (Brouri et al., Opt. Lett. 25, 1294
-(2000)) -- exactly the forward model the package's own `g2_zero(...,
-rho)` applies, so the round trip is machine-exact and asserted in the
-tests; the correction maps confidence-interval endpoints through the
-same affine transform, truncates at the physical floor g2 = 0 without
-hiding the untruncated value, and refuses rho outside (0, 1].
-`signal_fraction` builds rho from measured signal and background rates.
-`deadtime_corrected_rate` inverts the non-paralyzable dead-time
-throughput r_meas = r/(1 + r tau_d) -- the exact renewal-theory rate of
-the greedy dead-time pass in the Monte-Carlo detector chain, validated
-against it statistically -- and refuses measured rates at or beyond the
-saturation rate instead of extrapolating. All three are torch-free.
-
-```python
-from sparq import background_corrected_g2, signal_fraction
-
-rho = signal_fraction(signal_rate, background_rate)
-res = background_corrected_g2(g2_measured, rho, ci=(lo, hi))
-print(res["g2_corrected"], res["ci"])
-```
-
-## Exact Bayesian posterior for g2(0) (new in v0.5)
-
-`bayesian_g2` completes the inferential toolbox: alongside the
-bootstrap (shot noise through the full pipeline) and the Wilks profile
-likelihood (frequentist, model-based), it returns the EXACT
-finite-count Bayesian posterior of the model-free quantity papers
-quote first -- the raw central-window g2, the zero-delay coincidence
-rate over the flat level. With independent Gamma priors on the two
-Poisson rates (Jeffreys by default) the posterior of the ratio is a
-scaled beta-prime law in closed form: density, quantiles,
-equal-tailed credible intervals and the triage verdict probability
-P[g2 < 1/2 | data] are exact expressions in four counts -- no
-sampling, no optimizer, no asymptotics, and no acquisition time
-needed (it cancels in the ratio). The docstring states the estimand
-honestly: a window average sits on top of the dip, so it upper-bounds
-g2(0); dip-shape-aware inference stays with `profile_likelihood_ci`.
-
-```python
-from sparq import bayesian_g2
-post = bayesian_g2(counts_on_grid)         # Jeffreys prior, 1-ns window
-lo, hi = post.credible_interval(0.95)
-print(post.median(), (lo, hi), post.prob_below(0.5))
-```
-
-Anchors in the test suite: the hand-built beta-prime law against
-SciPy's independent implementation to 1e-12; unit mass and closed-form
-moments by quadrature; the closed form against direct numerical
-marginalization of the exact Poisson likelihood; Monte-Carlo
-Gamma-ratio agreement; nominal credible-interval coverage on
-twin-generated histograms; and the single-versus-two-emitter verdict
-ordering.
-
-## Registering your own platform
-
-The built-in priors (NV, hBN, GaN, SiV) are literature-anchored defaults,
-not a limit: `register_platform` adds any emitter with your own
-photophysical ranges, after which it works everywhere a platform name is
-accepted (site sampling, the dataset generators, the triage environment,
-the graph encoder's template).
-
-```python
-from sparq import Platform, register_platform, sample_site
-register_platform(Platform("MyQD", (0.5, 2.0), (20, 400), (0.0, 0.5),
-                           (50, 500), (0.7, 0.99), 0.05, (5, 100), (0.5, 10)))
-site = sample_site(rng, platform="MyQD")
-```
-
-## What is in the package
-
-```
-sparq/
-  physics.py            emitter photophysics, platform priors, HBT twin
-                        (exact Poisson histogram statistics) and the full
-                        Monte-Carlo photon-stream simulator w/ detector
-                        impairments
-  exact.py              numerically exact master-equation g2(tau)
-  pulsed.py             pulsed-excitation twin + comb calibration +
-                        conventional peak-area analysis
-  analysis.py           g2 analysis of measured data: bootstrap and
-                        profile-likelihood uncertainties, exact
-                        background and dead-time corrections (torch-free)
-  sequential.py         Wald SPRT certifier on exact Poisson likelihoods
-                        (torch-free)
-  bayes.py              exact-Poisson Bayesian posterior of the raw
-                        central-window g2 (conjugate closed form,
-                        torch-free)
-  datasets.py           synthetic acquisition generators + loader for the
-                        real sps-quality quantum-dot HBT data
-  estimators.py         LM-fit baseline, CNN, surrogate-gradient spiking
-                        network, physics-in-the-loop training
-  twin_torch.py         differentiable twin (adjoint/pathwise gradients
-                        through the measurement protocol) + profile
-                        Fisher information
-  sac_per.py            discrete-action Soft Actor-Critic + prioritized
-                        experience replay (sum-tree)
-  rl_env.py             closed-loop emitter-triage environment + baselines
-  gnn.py                level-structure template graphs + message-passing
-                        encoder for cross-platform transfer
-```
-
-## Tests
-
-```bash
-pip install -e .[test]
-pytest tests -q     # a few seconds; ML tests skip when torch is absent
-```
-
-The suite pins the physics to exact references: the two-exponential g2 law
-against the master-equation eigen-decomposition, the closed-form IRF
-convolution against brute-force quadrature, Poisson statistics of the
-histogram twin, comb calibration and peak-area recovery, sum-tree replay
-proportionality, the exact background/dead-time correction round
-trips, the closed-form Bayesian g2 posterior against SciPy's
-independent beta-prime implementation and a direct Poisson
-marginalization, and the shape/gradient contracts of the estimators, the
-differentiable protocol twin and the triage environment. It runs in CI on
-every push and pull request.
+67 tests (Python 3.9-3.13, ML tests skip without torch, run in CI on
+every push), each pinned to an exact reference: the two-exponential
+correlation law against the master-equation eigendecomposition; the
+closed-form instrument-response convolution against brute-force
+quadrature; Poisson statistics of the histogram twin; the Bayesian
+posterior against SciPy's independent implementation and a direct
+numerical marginalization; exact background and dead-time correction
+round trips; the fast-emitter window failure and recovery; profile
+intervals covering the truth with and without the singles-rate prior;
+exact file-contract round trips; and the shape and gradient contracts
+of the ML components.
 
 ## Real data
 
 The experimental quantum-dot HBT measurements used by
 `sparq.datasets.load_fisequr` are from the openly licensed
 [sps-quality](https://github.com/UTS-CASLab/sps-quality) repository
-(Kedziora et al., *Mach. Learn.: Sci. Technol.* **4**, 045042 (2023));
-they are not redistributed here.
+(Kedziora et al., *Mach. Learn.: Sci. Technol.* **4**, 045042
+(2023)); they are not redistributed here, and the loader takes the
+dataset directory explicitly.
 
 ## Contributing and support
 
 Bug reports, questions and pull requests are welcome through
-[GitHub issues](https://github.com/TaN-MM-Org/sparq-triage/issues); see
-[CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and the design
-rules. Tagged releases are published to PyPI by CI.
+[GitHub issues](https://github.com/TaN-MM-Org/sparq-triage/issues);
+see [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and
+the design rules. Tagged releases are published to PyPI by CI.
 
 ## License and citation
 
-Apache-2.0 (see LICENSE). Please cite the associated paper if you use this
-code; citation metadata is in [CITATION.cff](CITATION.cff).
+Apache-2.0 (see LICENSE). Please cite the associated paper if you use
+this code; citation metadata is in [CITATION.cff](CITATION.cff).
+Every release is archived on Zenodo under the concept DOI
+[10.5281/zenodo.22278040](https://doi.org/10.5281/zenodo.22278040),
+which always resolves to the latest version.
