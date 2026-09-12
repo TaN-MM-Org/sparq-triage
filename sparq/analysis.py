@@ -23,15 +23,42 @@ import numpy as np
 
 from .datasets import rebin_real, robust_flat_rate
 from .physics import HBTConfig
+from .physics import _exp_conv_gauss
 from .pulsed import T_REP_NS, calibrate_comb, g2_peak_area
 from scipy.optimize import curve_fit, minimize
 from scipy.stats import chi2
 
 
-def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None):
+DEFAULT_T1_BOUNDS = (0.3, 80.0)     # ns; the NV-scale window of v0.1-v0.5
+DEFAULT_T2_BOUNDS = (50.0, 800.0)   # ns
+
+
+def _check_time_bounds(name, b):
+    try:
+        lo, hi = float(b[0]), float(b[1])
+    except (TypeError, IndexError, ValueError):
+        raise ValueError(f"{name} must be a (low, high) pair in ns") from None
+    if not (np.isfinite(lo) and np.isfinite(hi) and 0.0 < lo < hi):
+        raise ValueError(f"{name} must satisfy 0 < low < high; got {b}")
+    return lo, hi
+
+
+def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None,
+                     t1_bounds=DEFAULT_T1_BOUNDS,
+                     t2_bounds=DEFAULT_T2_BOUNDS):
     """Conventional pipeline: normalize by the singles-rate flat level and
     LM-fit the three-level model with multiple starts (best practice);
-    returns (g2_0_hat, ok_flag)."""
+    returns (g2_0_hat, ok_flag).
+
+    t1_bounds / t2_bounds: the (low, high) windows, in ns, that the
+    antibunching and bunching times are fitted within.  The defaults are
+    the NV-scale window used since v0.1; emitters outside it (sub-0.3 ns
+    quantum dots, second-scale shelving) need their own window, and a
+    window that excludes the true value silently rails the fit -- set
+    these from what you know about your emitter.
+    """
+    t1_lo, t1_hi = _check_time_bounds("t1_bounds", t1_bounds)
+    t2_lo, t2_hi = _check_time_bounds("t2_bounds", t2_bounds)
     flat = (0.5 * r_hat) ** 2 * (cfg.bin_width * 1e-9) * T_s
     if flat <= 0 or hist.sum() < 5:
         return 1.0, False
@@ -39,19 +66,45 @@ def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None):
     tau = cfg.bin_centers
     sd = np.sqrt(np.maximum(hist, 1)) / flat
 
-    def model(t, d, t1, a, t2, c0):
-        return c0 * (1.0 - d * np.exp(-np.abs(t) / t1)
-                     + a * np.exp(-np.abs(t) / t2))
+    # the physical single-site form: dip depth rho2 = rho^2 in [0, 1]
+    # multiplies BOTH exponentials (g2_measured's own parameterization),
+    # so g2(0) = 1 - rho2 and the (depth, shoulder) pair is identifiable
+    # -- unlike the naive 1 - d e1 + a e2 form, whose (d, a) ridge lets
+    # a long-t2 shoulder trade against the constant level.
+    # IRF-convolved exponentials (closed form; sigma_pair = sqrt(2)
+    # sigma_irf for two detectors) -- with the instrument response in
+    # the model, the estimate is the IRF-free g2(0), not the softened
+    # dip the raw histogram shows.
+    s_pair = np.sqrt(2.0) * float(cfg.sigma_irf)
 
+    def model(t, rho2, t1, a, t2, c0):
+        return c0 * (1.0 - rho2 * ((1.0 + a) * _exp_conv_gauss(t, t1, s_pair)
+                                   - a * _exp_conv_gauss(t, t2, s_pair)))
+
+    default_window = (t1_bounds == DEFAULT_T1_BOUNDS
+                      and t2_bounds == DEFAULT_T2_BOUNDS)
     if starts is None:
-        starts = [(0.7, 8.0, 0.1), (0.7, 15.0, 0.6),
-                  (0.7, 25.0, 0.1), (0.3, 15.0, 0.6)]
+        if default_window:
+            # the exact start set of v0.1-v0.5 (bitwise regression anchor)
+            starts = [(0.7, 8.0, 0.1), (0.7, 15.0, 0.6),
+                      (0.7, 25.0, 0.1), (0.3, 15.0, 0.6)]
+        else:
+            # spread the starts across the user's window (log-spaced)
+            tA, tB, tC = np.exp(np.linspace(np.log(t1_lo), np.log(t1_hi),
+                                            5))[1:4]
+            starts = [(0.7, tA, 0.1), (0.7, tB, 0.6),
+                      (0.7, tC, 0.1), (0.3, tB, 0.6)]
+    t2_start = 250.0 if default_window else float(np.sqrt(t2_lo * t2_hi))
     best = None
     c0g = max(np.median(y), 0.1)
-    bounds = ([0.0, 0.3, 0.0, 50.0, 0.01], [1.0, 80.0, 3.0, 800.0, 10.0])
+    bounds = ([0.0, t1_lo, 0.0, t2_lo, 0.01],
+              [1.0, t1_hi, 3.0, t2_hi, 10.0])
     for dg, t1g, ag in starts:
+        t1g = float(np.clip(t1g, t1_lo, t1_hi))
+        rg = float(np.clip(dg, 0.0, 1.0))          # rho2 start
         try:
-            popt, _ = curve_fit(model, tau, y, p0=(dg, t1g, ag, 250.0, c0g),
+            popt, _ = curve_fit(model, tau, y,
+                                p0=(rg, t1g, ag, t2_start, c0g),
                                 sigma=sd, bounds=bounds, maxfev=3000)
             r = float(np.sum(((model(tau, *popt) - y) / sd) ** 2))
             if best is None or r < best[0]:
@@ -60,23 +113,27 @@ def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None):
             continue
     if best is None:
         return 1.0, False
-    d, t1, a, t2, c0 = best[1]
-    return float(np.clip(1.0 - d + a, 0, 3)), True
+    rho2, t1, a, t2, c0 = best[1]
+    return float(np.clip(1.0 - rho2, 0.0, 1.0)), True
 
 
 
 
-def _fit_once(delay, counts, T_s, cfg, center=None):
+def _fit_once(delay, counts, T_s, cfg, center=None,
+              t1_bounds=DEFAULT_T1_BOUNDS, t2_bounds=DEFAULT_T2_BOUNDS):
     hist, center = rebin_real(np.asarray(delay, float),
                               np.asarray(counts, float), cfg, center=center)
     r_hat = robust_flat_rate(hist, cfg, T_s)
-    g2_0, ok = fit_g2_histogram(hist, T_s, r_hat, cfg)
+    g2_0, ok = fit_g2_histogram(hist, T_s, r_hat, cfg,
+                                t1_bounds=t1_bounds, t2_bounds=t2_bounds)
     return g2_0, ok, center, r_hat
 
 
 def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
                       center=None, n_bootstrap: int = 200, ci: float = 0.68,
-                      threshold: float = 0.5, seed: int = 0):
+                      threshold: float = 0.5, seed: int = 0,
+                      t1_bounds=DEFAULT_T1_BOUNDS,
+                      t2_bounds=DEFAULT_T2_BOUNDS):
     """Estimate g2(0) from a measured CW HBT histogram, with a bootstrap CI.
 
     Parameters: delay in ns (any uniform grid; an electronic delay offset is
@@ -85,7 +142,9 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
     cfg the analysis grid (defaults to the package's 121-bin +-60.5 ns
     grid), n_bootstrap the number of Poisson resamples (0 disables the CI),
     ci the two-sided confidence level, threshold the single-emitter
-    criterion on g2(0).
+    criterion on g2(0).  t1_bounds / t2_bounds set the lifetime windows
+    (ns) the fit searches -- the defaults are NV-scale; set them from
+    your emitter's known timescales when they fall outside it.
 
     Returns a dict with g2_0, ok (fit convergence), center (located dip
     position, ns), rate_cps (flat-level singles-rate estimate),
@@ -100,7 +159,9 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
         raise ValueError("delay and counts must be 1-D arrays of equal length")
     if np.any(counts < 0):
         raise ValueError("counts must be non-negative")
-    g2_0, ok, ctr, r_hat = _fit_once(delay, counts, T_s, cfg, center=center)
+    g2_0, ok, ctr, r_hat = _fit_once(delay, counts, T_s, cfg, center=center,
+                                     t1_bounds=t1_bounds,
+                                     t2_bounds=t2_bounds)
     out = dict(g2_0=g2_0, ok=ok, center=ctr, rate_cps=r_hat,
                single_emitter=bool(g2_0 < threshold))
     if n_bootstrap and n_bootstrap > 0:
@@ -108,7 +169,9 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
         draws = []
         for _ in range(int(n_bootstrap)):
             resampled = rng.poisson(counts).astype(float)
-            g2_b, ok_b, _, _ = _fit_once(delay, resampled, T_s, cfg, center=ctr)
+            g2_b, ok_b, _, _ = _fit_once(delay, resampled, T_s, cfg,
+                                         center=ctr, t1_bounds=t1_bounds,
+                                         t2_bounds=t2_bounds)
             if ok_b:
                 draws.append(g2_b)
         if draws:
@@ -167,18 +230,40 @@ def _poisson_nll(hist, mu):
 
 def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
                           level: float = 0.95, n_grid: int = 41,
-                          g2_max: float = 1.5):
+                          g2_max: float = 1.5,
+                          t1_bounds=DEFAULT_T1_BOUNDS,
+                          t2_bounds=DEFAULT_T2_BOUNDS,
+                          c0_prior=None):
     """Profile-likelihood confidence interval for g2(0) (Wilks/likelihood
     ratio), from the exact Poisson likelihood of the histogram.
 
     For each value of g2(0) on a grid the Poisson negative log-likelihood
     of the three-level model is minimized over all nuisance parameters
-    (lifetimes, bunching time, normalization) under the constraint
-    g2(0) = 1 - d + a; the interval is the set where the profile deviance
+    (lifetimes, bunching amplitude, normalization) with the dip depth
+    FIXED at rho2 = 1 - g2 -- the physical parameterization, in which
+    g2(0) = 1 - rho2 is identifiable (the naive 1 - d e1 + a e2 form
+    has a (d, a) ridge when the shoulder is slow, and its intervals
+    inherit it); the interval is the set where the profile deviance
     2 [NLL(g2) - NLL_min] stays below the chi-square(1) quantile of
     ``level`` (Wilks' theorem).  Unlike the parametric bootstrap this
     needs no resampling, and unlike the fit's linearized errors it remains
     honest for asymmetric likelihoods at low counts.
+
+    t1_bounds / t2_bounds: the lifetime windows (ns) the nuisance
+    parameters are profiled within; defaults are the NV-scale window.
+
+    c0_prior: optional (mean, sd) Gaussian constraint on the flat-level
+    normalization c0 (the ratio of the true uncorrelated coincidence
+    level to the one implied by ``r_hat``).  With c0 fully free the
+    interval can be honestly WIDE: a larger bunching amplitude with a
+    slower shoulder trades almost exactly against a lower flat level,
+    and the histogram alone cannot break the tie (this near-degeneracy
+    is real; a more restrictive model would only hide it).  An
+    experiment breaks it with information the histogram does not
+    carry: the singles rates measured directly on the counters.  Pass
+    ``r_hat`` from those measured rates and ``c0_prior=(1.0, sd)``
+    with sd their relative uncertainty, and the interval tightens to
+    what the data genuinely support.
 
     Returns a dict with g2_hat (profile minimum), lo, hi (interval
     bounds, NaN when unbounded on that side within the grid), level, and
@@ -192,27 +277,48 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
         raise ValueError("histogram carries too little signal to profile")
     tau = np.abs(cfg.bin_centers)
 
-    def nll_free(theta, g2):
-        d, t1, t2, c0 = theta
-        a = g2 - 1.0 + d
-        mu = flat * c0 * (1.0 - d * np.exp(-tau / t1) + a * np.exp(-tau / t2))
-        return _poisson_nll(hist, mu)
+    if c0_prior is not None:
+        c0_m, c0_sd = float(c0_prior[0]), float(c0_prior[1])
+        if not (np.isfinite(c0_m) and np.isfinite(c0_sd)
+                and c0_m > 0.0 and c0_sd > 0.0):
+            raise ValueError("c0_prior must be a (mean, sd) pair with "
+                             "positive values")
 
-    bounds_t = [(0.3, 80.0), (50.0, 800.0), (0.01, 10.0)]
-    grid = np.linspace(0.0, g2_max, int(n_grid))
+    s_pair = np.sqrt(2.0) * float(cfg.sigma_irf)
+
+    def nll_free(theta, g2):
+        t1, t2, a, c0 = theta
+        rho2 = 1.0 - g2                      # fixed by the profiled g2
+        mu = flat * c0 * (1.0 - rho2 * ((1.0 + a) * _exp_conv_gauss(tau, t1, s_pair)
+                                        - a * _exp_conv_gauss(tau, t2, s_pair)))
+        nll = _poisson_nll(hist, mu)
+        if c0_prior is not None:
+            nll += 0.5 * ((c0 - c0_m) / c0_sd) ** 2
+        return nll
+
+    t1_lo, t1_hi = _check_time_bounds("t1_bounds", t1_bounds)
+    t2_lo, t2_hi = _check_time_bounds("t2_bounds", t2_bounds)
+    t1_st = float(np.clip(15.0, t1_lo, t1_hi))
+    t2_st = float(np.clip(250.0, t2_lo, t2_hi))
+    lo_b = [t1_lo, t2_lo, 0.0, 0.01]
+    hi_b = [t1_hi, t2_hi, 3.0, 10.0]
+    # the single-site family has measured g2(0) = 1 - rho2 in [0, 1]
+    grid = np.linspace(0.0, min(float(g2_max), 1.0), int(n_grid))
     prof = np.empty_like(grid)
     warm = None
     c0g = max(float(np.median(hist)) / max(flat, 1e-12), 0.1)
+    t1_gm = float(np.sqrt(t1_lo * t1_hi))
+    t2_gm = float(np.sqrt(t2_lo * t2_hi))
     for i, g2 in enumerate(grid):
-        d_lo = max(0.0, 1.0 - g2)          # a = g2 - 1 + d >= 0
-        starts = [np.array([min(max(0.7, d_lo), 1.0), 15.0, 250.0, c0g])]
+        starts = [np.array([t1_st, t2_st, 0.3, c0g]),
+                  np.array([t1_gm, t2_gm, 0.3, c0g])]
         if warm is not None:
             starts.insert(0, warm)
         best = None
         for x0 in starts:
-            x0 = np.clip(x0, [d_lo, 0.3, 50.0, 0.01], [1.0, 80.0, 800.0, 10.0])
+            x0 = np.clip(x0, lo_b, hi_b)
             res = minimize(nll_free, x0, args=(g2,), method="L-BFGS-B",
-                           bounds=[(d_lo, 1.0)] + bounds_t)
+                           bounds=list(zip(lo_b, hi_b)))
             if best is None or res.fun < best.fun:
                 best = res
         prof[i] = best.fun

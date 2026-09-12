@@ -44,11 +44,12 @@ from .analysis import (analyze_histogram, analyze_pulsed,
                        fit_g2_histogram, profile_likelihood_ci,
                        signal_fraction)
 from .sequential import SPRTCertifier
+from .datasets import load_hbt_csv, rebin_real, robust_flat_rate, save_hbt_csv
 from .bayes import G2Posterior, bayesian_g2
 from .exact import effective_params, g2_exact, liouvillian, rates_from_site, steady_state
 from .pulsed import calibrate_comb, expected_hist_pulsed, g2_peak_area, peak_shape
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
@@ -59,6 +60,7 @@ __all__ = [
     "analyze_histogram", "analyze_pulsed", "fit_g2_histogram",
     "profile_likelihood_ci", "SPRTCertifier",
     "G2Posterior", "bayesian_g2",
+    "load_hbt_csv", "save_hbt_csv", "rebin_real", "robust_flat_rate",
     "background_corrected_g2", "deadtime_corrected_rate", "signal_fraction",
     "effective_params", "g2_exact", "liouvillian", "rates_from_site",
     "steady_state",

@@ -86,16 +86,20 @@ def make_eval_set(rng, n, T_s, platform="NV", cfg=CFG, n_slices=N_SLICES,
 # Real experimental data (sps-quality, FI-SEQUR demonstrator sample)
 # ----------------------------------------------------------------------
 
-FISEQUR_DIR = "/home/claude/sps-quality/data/InGaAs-GaAs QDs/FI-SEQUR project demonstrator sample"
-
-
-def load_fisequr(path_dir=FISEQUR_DIR):
+def load_fisequr(path_dir):
     """Load the eight FI-SEQUR HBT measurement series.
 
+    path_dir: the directory holding the dataset's .txt files (the
+    sps-quality release of Kedziora et al., MLST 2023) -- there is no
+    default, because the data lives wherever YOU downloaded it.
     Each file: rows = delay bins, first column = delay (ns), remaining
     columns = coincidence counts of successive 10-s snapshots.
     Returns list of dicts with delay axis, snapshot matrix, and metadata.
     """
+    if not path_dir or not os.path.isdir(path_dir):
+        raise ValueError(
+            "load_fisequr needs the directory of the downloaded "
+            "sps-quality dataset; got %r" % (path_dir,))
     series = {}
     for f in sorted(glob.glob(os.path.join(path_dir, "*.txt"))):
         raw = np.loadtxt(f)
@@ -114,6 +118,60 @@ def load_fisequr(path_dir=FISEQUR_DIR):
         s["total"] = s["counts"].sum(1)
         s["T_total"] = s["counts"].shape[1] * 10.0
     return out
+
+
+def save_hbt_csv(path, delay_ns, counts):
+    """Write a measured HBT histogram in the documented two-column
+    contract: header exactly ``delay_ns,counts``, one row per bin.
+    The round trip through `load_hbt_csv` is exact (asserted in the
+    tests)."""
+    d = np.asarray(delay_ns, dtype=float).ravel()
+    c = np.asarray(counts, dtype=float).ravel()
+    if d.size != c.size or d.size < 5:
+        raise ValueError("delay_ns and counts must be equal-length "
+                         "arrays with at least 5 bins")
+    with open(path, "w") as fh:
+        fh.write("delay_ns,counts\n")
+        for a, b in zip(d, c):
+            fh.write(f"{float(a)!r},{float(b)!r}\n")
+
+
+def load_hbt_csv(path):
+    """Read a measured HBT histogram in the documented contract
+    (header exactly ``delay_ns,counts``); returns (delay_ns, counts)
+    ready for `analyze_histogram` / `rebin_real`.
+
+    Refusals instead of guesses: a wrong header, rows without exactly
+    two fields, non-finite values, negative counts, a non-increasing
+    delay axis, or fewer than 5 bins all raise with an explanation.
+    """
+    with open(path) as fh:
+        header = fh.readline().strip()
+        if header != "delay_ns,counts":
+            raise ValueError(
+                "histogram file header must be exactly 'delay_ns,counts'; "
+                f"got {header!r}")
+        d, c = [], []
+        for lineno, line in enumerate(fh, start=2):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            if len(parts) != 2:
+                raise ValueError(f"line {lineno}: expected 2 fields")
+            d.append(float(parts[0]))
+            c.append(float(parts[1]))
+    d = np.asarray(d, dtype=float)
+    c = np.asarray(c, dtype=float)
+    if d.size < 5:
+        raise ValueError("histogram has fewer than 5 bins")
+    if not (np.all(np.isfinite(d)) and np.all(np.isfinite(c))):
+        raise ValueError("histogram contains non-finite values")
+    if np.any(c < 0):
+        raise ValueError("counts must be non-negative")
+    if np.any(np.diff(d) <= 0):
+        raise ValueError("delay axis must be strictly increasing")
+    return d, c
 
 
 def robust_flat_rate(hist, cfg, T_s, lo_frac=0.65):
