@@ -58,12 +58,14 @@ of assuming the defaults it was born with:
   hBN, GaN, SiV) are literature-anchored defaults, not a limit.
 - Raw time tags, not just histograms (v0.7): `load_timetags_csv`
   reads a two-column (channel, time) tag list -- the form vendor
-  software exports -- and `normalize_g2` turns the correlation into
-  g2 with Poisson error bars using the standard accidental
-  normalization g2 = C T / (N1 N2 w), so two independent detectors
-  read exactly 1. `correlate_start_stop` emulates the classic
-  single-stop TCSPC card for comparison with hardware histograms;
-  fit the all-pairs correlation, which has no pile-up distortion.
+  software exports -- and `normalize_g2` turns the coincidence
+  counts into g2 with error bars by dividing by the rate two
+  UNRELATED detectors would produce (the standard normalization
+  g2 = C T / (N1 N2 w)), so uncorrelated light reads exactly 1.
+  `correlate_start_stop` emulates the classic timing card that only
+  records the first stop after each start, so hardware histograms
+  can be compared like for like; fit the all-pairs correlation,
+  which has none of that card's high-rate distortion.
 
 ## Four routes to an uncertainty, each honest about what it assumes
 
@@ -106,7 +108,7 @@ histogram twin the physics core provides.
 
 ## How it is checked
 
-72 tests (Python 3.9-3.13, ML tests skip without torch, run in CI on
+72 tests (Python 3.10-3.13, ML tests skip without torch, run in CI on
 every push), each pinned to an exact reference: the two-exponential
 correlation law against the master-equation eigendecomposition; the
 closed-form instrument-response convolution against brute-force
@@ -115,8 +117,10 @@ posterior against SciPy's independent implementation and a direct
 numerical marginalization; exact background and dead-time correction
 round trips; the fast-emitter window failure and recovery; profile
 intervals covering the truth with and without the singles-rate prior;
-exact file-contract round trips; and the shape and gradient contracts
-of the ML components.
+exact file-contract round trips; the time-tag correlator against a
+brute-force pair-by-pair count, with independent random detectors
+normalizing to a flat g2 = 1 within the reported errors; and the
+shape and gradient contracts of the ML components.
 
 ## Real data
 
