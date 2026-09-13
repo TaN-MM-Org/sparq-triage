@@ -56,6 +56,14 @@ of assuming the defaults it was born with:
 - `register_platform` makes your emitter a first-class citizen
   everywhere a platform name is accepted; the built-in priors (NV,
   hBN, GaN, SiV) are literature-anchored defaults, not a limit.
+- Raw time tags, not just histograms (v0.7): `load_timetags_csv`
+  reads a two-column (channel, time) tag list -- the form vendor
+  software exports -- and `normalize_g2` turns the correlation into
+  g2 with Poisson error bars using the standard accidental
+  normalization g2 = C T / (N1 N2 w), so two independent detectors
+  read exactly 1. `correlate_start_stop` emulates the classic
+  single-stop TCSPC card for comparison with hardware histograms;
+  fit the all-pairs correlation, which has no pile-up distortion.
 
 ## Four routes to an uncertainty, each honest about what it assumes
 
@@ -98,7 +106,7 @@ histogram twin the physics core provides.
 
 ## How it is checked
 
-67 tests (Python 3.9-3.13, ML tests skip without torch, run in CI on
+72 tests (Python 3.9-3.13, ML tests skip without torch, run in CI on
 every push), each pinned to an exact reference: the two-exponential
 correlation law against the master-equation eigendecomposition; the
 closed-form instrument-response convolution against brute-force

@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.7.0 (2026-09-13)
+
+From-the-hardware release: raw photon time tags in, normalized g2
+with error bars out, both correlator conventions labs actually use.
+
+### Added
+
+- `load_timetags_csv` / `save_timetags_csv`: exact two-column
+  (channel, time_ns) tag-list contract with a bit-for-bit round trip,
+  channel remapping for your numbering, and refusals for non-finite
+  entries, unknown channels and empty files. No proprietary binary
+  formats are parsed on purpose: a PTU reader written without the
+  vendor spec would be a guess.
+- `normalize_g2`: the standard accidental normalization
+  g2(tau) = C(tau) T / (N1 N2 w) with per-bin Poisson one-sigma
+  error bars and the accidental level reported explicitly (Brouri
+  et al., Opt. Lett. 25, 1294 (2000); Fox, Quantum Optics (2006),
+  ch. 6). Anchors: two independent Poisson streams read g2 = 1
+  within the reported errors with reduced chi-square near 1; a
+  simulated single emitter's tags normalize to a clear antibunching
+  dip with wings at 1.
+- `correlate_start_stop`: the classic single-stop TAC/TCSPC
+  convention (first stop per start), for emulating hardware
+  histograms. Anchors: exact equality with the all-pairs `correlate`
+  on streams too sparse for two stops per window; elementwise
+  undercount (pile-up) on dense streams, never inventing pairs;
+  at most one count per start.
+- The existing all-pairs `correlate` is now pinned against an
+  independent brute-force O(N^2) double loop, exactly.
+
 ## 0.6.0 (2026-09-12)
 
 Adaptability release: the analysis pipeline no longer assumes an
