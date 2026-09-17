@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.0 (2026-09-17)
+
+Lab adaptability: the acquisition planned before it is run.
+
+- `lab.site_from_numbers`: an `EmitterSite` from plainly named lab
+  numbers (lifetimes in ns, count rate in kcps, signal fraction).
+- `lab.expected_posterior`: the exact closed-form Bayesian verdict
+  (`bayesian_g2`) evaluated on the site's average histogram
+  (`expected_histogram`) -- typical-data planning, stated as such.
+- `lab.required_acquisition_time`: the shortest run whose typical
+  data certify the site at a chosen confidence, by bisection; a site
+  whose window-averaged g2 is not below the threshold is refused by
+  the exact time-independence of the window ratio, with the number
+  named, and an unreachable confidence within t_max is refused with
+  the probability actually attained there.
+- Anchors: the window ratio identical at 1 s and 1000 s to 1e-12; the
+  planner bitwise consistent with the two public code paths it
+  composes; the returned time bracketed on both sides of the
+  confidence; the four-emitter site refused; 200 seeded Monte-Carlo
+  runs at a 4x margin certifying > 90%.
+
 ## 0.7.0 (2026-09-13)
 
 From-the-hardware release: raw photon time tags in, normalized g2

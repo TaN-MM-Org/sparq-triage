@@ -97,6 +97,31 @@ is machine-exact), `signal_fraction` builds its input from measured
 rates, and `deadtime_corrected_rate` inverts detector dead-time,
 refusing rates at or beyond saturation instead of extrapolating.
 
+## Plan the acquisition before running it
+
+How long must the correlator run before "single emitter" can be
+certified at your confidence -- and can it ever? The `lab` tools
+answer both from plainly named numbers, before any data exist:
+
+```python
+from sparq import site_from_numbers, required_acquisition_time
+
+site = site_from_numbers(tau1_ns=12.0, tau2_ns=200.0, a=0.3,
+                         rate_kcps=120.0, rho=0.97)
+T, report = required_acquisition_time(site, confidence=0.95)
+print(T, "seconds;", report["prob_below"])
+```
+
+The planning device is stated plainly: it evaluates the exact
+Bayesian verdict on the AVERAGE histogram the site would produce, so
+the answer is a typical-data time -- individual runs scatter around
+it, and the test suite shows a 4x margin certifying more than 90% of
+seeded runs. One exact fact makes the hopeless case refusable rather
+than slow: the window-averaged g2 does not change with acquisition
+time at all (both window means scale linearly with it), so a site
+whose window g2 is not below the threshold is refused with that
+number -- no run length can certify it.
+
 ## The machine-learning layer (optional)
 
 With the `[ml]` extra: neural estimators (CNN and spiking network)
@@ -108,7 +133,7 @@ histogram twin the physics core provides.
 
 ## How it is checked
 
-72 tests (Python 3.10-3.13, ML tests skip without torch, run in CI on
+80 tests (Python 3.10-3.13, ML tests skip without torch, run in CI on
 every push), each pinned to an exact reference: the two-exponential
 correlation law against the master-equation eigendecomposition; the
 closed-form instrument-response convolution against brute-force
