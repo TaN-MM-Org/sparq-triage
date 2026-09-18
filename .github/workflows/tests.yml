@@ -25,3 +25,19 @@ jobs:
           pip install -e .[test]
       - name: Run the test suite
         run: pytest tests -q
+
+  core-future:
+    # future-proofing: the torch-free core must already run on the
+    # newest Python, ahead of upstream ML wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install core only (no torch) and pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+      - name: Run the torch-free test suite (ML tests skip)
+        run: pytest tests -q
