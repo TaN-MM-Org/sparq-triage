@@ -48,12 +48,13 @@ from .datasets import load_hbt_csv, rebin_real, robust_flat_rate, save_hbt_csv
 from .bayes import G2Posterior, bayesian_g2
 from .exact import effective_params, g2_exact, liouvillian, rates_from_site, steady_state
 from .pulsed import calibrate_comb, expected_hist_pulsed, g2_peak_area, peak_shape
+from .heralded import car_for_purity, heralded_g2_limit
 from .lab import (expected_posterior, required_acquisition_time,
                   site_from_numbers)
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
@@ -73,5 +74,6 @@ __all__ = [
     "save_timetags_csv",
     "site_from_numbers", "expected_posterior",
     "required_acquisition_time",
+    "heralded_g2_limit", "car_for_purity",
     "__version__",
 ]
