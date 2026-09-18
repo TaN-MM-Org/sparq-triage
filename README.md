@@ -122,6 +122,20 @@ time at all (both window means scale linearly with it), so a site
 whose window g2 is not below the threshold is refused with that
 number -- no run length can certify it.
 
+## Heralded sources too
+
+Solid-state emitters are one route to single photons; heralded pair
+sources are the other, and their purity budget obeys an exact closed
+form in one routinely measured number, the coincidence-to-accidental
+ratio: g2_h(0) = (2 CAR - 1)/CAR^2 for a laser-pumped source, with a
+thermal-statistics variant (H. Wang et al., arXiv:2404.03236).
+`heralded_g2_limit` and `car_for_purity` ship both directions --
+what purity a measured CAR permits, and the minimum CAR a target
+purity requires -- as exact formulas with exact inversions, refusing
+uncertifiable inputs. These are floors set by the pair statistics
+alone; a real source sits at or above them, and the docstring says
+so.
+
 ## The machine-learning layer (optional)
 
 With the `[ml]` extra: neural estimators (CNN and spiking network)
@@ -133,7 +147,7 @@ histogram twin the physics core provides.
 
 ## How it is checked
 
-80 tests (Python 3.10-3.13, ML tests skip without torch, run in CI on
+85 tests (Python 3.10-3.13 plus a torch-free 3.14 job, ML tests skip without torch, run in CI on
 every push), each pinned to an exact reference: the two-exponential
 correlation law against the master-equation eigendecomposition; the
 closed-form instrument-response convolution against brute-force

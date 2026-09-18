@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.0 (2026-09-18)
+
+Heralded sources, and a future-proofing pass.
+
+- `heralded.heralded_g2_limit` / `car_for_purity`: the exact purity
+  limit a measured coincidence-to-accidental ratio permits --
+  g2_h(0) = (2 CAR - 1)/CAR^2 for Poissonian (laser-pumped) pair
+  statistics and (4 CAR + 2)/(CAR + 1)^2 for thermal -- and the
+  exact closed-form inversions (Wang et al., arXiv:2404.03236).
+  Stated as floors set by the pair statistics alone; real sources
+  sit at or above them.
+- CI gains a torch-free Python 3.14 job, so the dependency-light
+  core stays ahead of upstream ML wheels.
+- Anchors: both closed forms verified against their defining
+  quadratics as an independent algebraic path; inversions exact to
+  machine precision; the CAR = 1 boundaries exactly 1 and 3/2; the
+  2/CAR and 4/CAR falloffs; monotonicity; refusals for
+  uncertifiable inputs.
+
 ## 0.8.0 (2026-09-17)
 
 Lab adaptability: the acquisition planned before it is run.
