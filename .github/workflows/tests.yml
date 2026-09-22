@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,8 +27,8 @@ jobs:
         run: pytest tests -q
 
   core-future:
-    # future-proofing: the torch-free core must already run on the
-    # newest Python, ahead of upstream ML wheels
+    # the torch-free core on the newest Python: checks that the package
+    # works without PyTorch (the ML tests skip)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,4 +40,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e . pytest
       - name: Run the torch-free test suite (ML tests skip)
+        run: pytest tests -q
+
+  oldest-dependencies:
+    # the lowest versions pyproject.toml allows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install the oldest allowed numpy, scipy and torch
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy==1.24.0" "scipy==1.10.0" pytest
+          # torch 2.0.0 from PyPI (the build verified locally); it runs on CPU
+          pip install "torch==2.0.0"
+          pip install --no-deps -e .
+          python -c "import numpy, scipy, torch; print(numpy.__version__, scipy.__version__, torch.__version__)"
+      - name: Run the test suite
         run: pytest tests -q
