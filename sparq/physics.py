@@ -397,7 +397,13 @@ def _detector_chain(t, imp: DetectorImpairments, rng):
 
 
 def correlate(t_a, t_b, cfg: HBTConfig):
-    """HBT coincidence histogram from two timestamp arrays (ns)."""
+    """HBT coincidence histogram from two timestamp arrays (ns).
+
+    t_b must be sorted ascending (it is searched by bisection); an
+    unsorted t_b is refused with ValueError. t_a may be in any order.
+    """
+    if np.any(np.diff(np.asarray(t_b, dtype=float)) < 0):
+        raise ValueError("t_b must be sorted ascending")
     hist = np.zeros(cfg.n_bins)
     if len(t_a) == 0 or len(t_b) == 0:
         return hist

@@ -72,7 +72,7 @@ def load_timetags_csv(path, channel_a=0, channel_b=1):
     non-finite times, unknown channels, and an empty file, instead of
     correlating garbage silently.
     """
-    data = np.genfromtxt(path, delimiter=",", skip_header=1)
+    data = np.genfromtxt(path, delimiter=",", skip_header=1, ndmin=2)
     if data.size == 0:
         raise ValueError(f"{path}: no time tags")
     data = np.atleast_2d(data)
@@ -96,7 +96,7 @@ def correlate_start_stop(t_a, t_b, cfg: HBTConfig):
     """Classic TAC start-stop histogram: first stop per start only.
 
     For each start tag on channel A, the single earliest stop tag on
-    channel B with delay in (-tau_max, +tau_max] is histogrammed;
+    channel B with delay in [-tau_max, +tau_max) is histogrammed;
     later stops in the same window are discarded, exactly as a
     single-stop TCSPC card does. Provided so hardware histograms can
     be emulated and compared; FIT THE ALL-PAIRS `correlate` HISTOGRAM,

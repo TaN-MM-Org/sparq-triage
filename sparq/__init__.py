@@ -54,7 +54,7 @@ from .lab import (expected_posterior, required_acquisition_time,
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",

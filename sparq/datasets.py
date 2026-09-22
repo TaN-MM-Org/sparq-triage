@@ -23,7 +23,8 @@ def make_batch(rng, batch, T_dist=("logu", 0.03, 30.0), platform="NV",
     Returns dict with:
       stream  [B, S, K]  sliced coincidence counts (SNN input)
       hist    [B, K]     integrated histogram (CNN/fit input)
-      aux     [B, 3]     log10 T, log10 singles-rate estimate, log10 counts
+      aux     [B, 5]     log10 T, log10 singles-rate estimate, log10(1 + counts),
+                         log10(1 + expected flat total), log10(1 + central counts)
       y_cls   [B]        1 if physical g2(0) < 0.5
       y_g2    [B]        physical g2(0)
       T       [B]        acquisition times (s)
@@ -184,7 +185,19 @@ def robust_flat_rate(hist, cfg, T_s, lo_frac=0.65):
 
 def rebin_real(delay, hist, cfg=CFG, center=None):
     """Re-bin a real histogram onto the twin's 121-bin +-60.5 ns grid,
-    centered on the antibunching dip."""
+    centered on the antibunching dip.
+
+    Each input bin goes whole into the grid bin that contains its delay,
+    so the input bins must not be wider than the grid bins: a coarser
+    input would leave some grid bins empty, and is refused with
+    ValueError (pass a coarser `cfg` instead)."""
+    step = np.abs(np.diff(np.asarray(delay, dtype=float)))
+    if step.size and step.max() > cfg.bin_width * (1.0 + 1e-6):
+        raise ValueError(
+            f"input delay bins ({step.max():.4g} ns) are coarser than the "
+            f"analysis grid's {cfg.bin_width:.4g} ns bins, so some grid "
+            "bins would stay empty; pass a cfg whose bin width is at "
+            "least the input bin width")
     if center is None:
         # robust dip locate: heavily smoothed minimum
         k = 41
