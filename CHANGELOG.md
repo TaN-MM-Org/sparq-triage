@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.9.1 (2026-09-22)
+
+Bug fixes for three inputs that gave wrong results without an error,
+tests that run on the oldest allowed NumPy, and a rewritten README.
+
+### Fixed
+
+- `correlate` searches the stop tags by bisection, which needs them
+  sorted, but did not check. An unsorted `t_b` gave a histogram with
+  most pairs missing (9 pairs instead of 376 on the new test's data).
+  It is now refused with ValueError. The order of `t_a` does not matter and is
+  still accepted.
+- `rebin_real`, and so `analyze_histogram`, accepted data binned more
+  coarsely than the analysis grid. Some grid bins stayed empty and the
+  fit returned a wrong g2(0) with `ok=True` (about 0.30 for a
+  noise-free histogram with 2 ns bins, whose true g2(0) is 0.0975).
+  Such data are now refused with ValueError; a coarser `cfg` accepts
+  them.
+- `load_timetags_csv` read a one-column file with exactly two rows as
+  one (channel, time) tag. It is now refused like other files without
+  two columns.
+- Docstrings: `correlate_start_stop` keeps delays in
+  [-tau_max, +tau_max), not (-tau_max, +tau_max]; `make_batch`
+  returns 5 auxiliary values per acquisition, not 3.
+
+### Tests
+
+- New: `test_correlate_refuses_unsorted_stop_channel`,
+  `test_timetag_file_with_one_column_is_refused`,
+  `test_input_grid_coarser_than_analysis_grid_is_refused`
+  (88 tests in total, up from 85).
+- `test_peak_shape_has_unit_area` used `np.trapezoid`, which exists
+  only from NumPy 2.0, although the package allows NumPy 1.24; it now
+  falls back to `np.trapz`. The package code itself did not use it.
+- The start-stop test now also asserts that the start-stop histogram
+  is not above the all-pairs histogram in any bin. The 0.7.0 notes,
+  the test module docstring and the `correlate_start_stop` docstring
+  already said "elementwise", but the test only compared totals.
+- CI: Python 3.14 added to the main matrix (with CPU PyTorch), and a
+  new `oldest-dependencies` job runs the suite on Python 3.10 with
+  NumPy 1.24.0, SciPy 1.10.0 and PyTorch 2.0.0 (from PyPI), which pass.
+
+### Changed
+
+- README rewritten for readers outside the field: a guide to the
+  terms, units, eight examples with their printed output, the full
+  list of refusals, and each test-backed claim with the tolerance the
+  test uses. Claims the tests do not support were removed (for
+  example, that uncorrelated light normalizes to "exactly" 1: the test
+  checks agreement within the error bars).
+- Classifiers now list Python 3.13 and 3.14, which CI tests.
+- CONTRIBUTING: the suite takes minutes, not seconds.
+
+### Notes on earlier entries
+
+- 0.8.0 says the planner is "bitwise consistent" with `bayesian_g2`;
+  the test compares within 1e-15 (probability) and 1e-12 (interval),
+  not bit for bit.
+- 0.9.0 lists "monotonicity" among the anchors; only the
+  Poissonian (laser-pumped) formula is tested for it. The heralded
+  test module docstring said CAR = 1 gives 1 "in both conventions";
+  the test (correctly) asserts 1 and 3/2, and the docstring is fixed.
+
 ## 0.9.0 (2026-09-18)
 
 Heralded sources, and a future-proofing pass.

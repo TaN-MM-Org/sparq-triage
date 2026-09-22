@@ -16,7 +16,7 @@ pip install -e .[test]
 pytest tests -q
 ```
 
-The suite runs in a few seconds and also runs in CI on every push and pull request. Without PyTorch the machine-learning tests skip automatically and the physics core is still fully tested.
+The suite takes a few minutes and also runs in CI on every push and pull request. Without PyTorch the machine-learning tests skip automatically and the physics core is still fully tested.
 
 ## Design rules
 
