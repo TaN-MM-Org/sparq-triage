@@ -1,7 +1,7 @@
 """Heralded-source anchors: both closed forms verified against their
 defining quadratics (an independent algebraic path); both inversions
 are exact round trips to machine precision; the boundary CAR = 1
-gives exactly g2 = 1 in both conventions; the large-CAR falloffs
+gives exactly g2 = 1 (Poissonian) and 3/2 (thermal); the large-CAR falloffs
 2/CAR and 4/CAR are asserted as limits; monotonicity throughout; and
 refusals for uncertifiable inputs."""
 import numpy as np

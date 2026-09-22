@@ -47,6 +47,7 @@ def test_start_stop_sparse_equality_and_pileup_undercount():
     h_all = correlate(t_a, t_b, CFG)
     h_ss = correlate_start_stop(t_a, t_b, CFG)
     assert h_ss.sum() < h_all.sum()
+    assert np.all(h_ss <= h_all)               # elementwise, bin by bin
     assert h_ss.sum() <= len(t_a)              # at most one stop per start
     with pytest.raises(ValueError):
         correlate_start_stop(t_a[::-1], t_b, CFG)   # unsorted refused
@@ -115,3 +116,28 @@ def test_csv_round_trip_and_refusals(tmp_path):
         normalize_g2(np.zeros(CFG.n_bins), 10, 10, -1.0, CFG)
     with pytest.raises(ValueError):
         normalize_g2(np.zeros(5), 10, 10, 1.0, CFG)
+
+
+def test_correlate_refuses_unsorted_stop_channel():
+    """`correlate` looks up the stop tags with a binary search, which is
+    only valid on a sorted array; an unsorted t_b used to return a
+    histogram with most pairs missing, silently. It is now refused, as
+    `correlate_start_stop` already did. The order of t_a does not
+    matter and stays accepted."""
+    rng = np.random.default_rng(3)
+    t_a = np.sort(rng.uniform(0, 5e4, 400))
+    t_b = np.sort(rng.uniform(0, 5e4, 350))
+    with pytest.raises(ValueError, match="sorted"):
+        correlate(t_a, rng.permutation(t_b), CFG)
+    assert np.array_equal(correlate(rng.permutation(t_a), t_b, CFG),
+                          _brute_force(t_a, t_b, CFG))
+
+
+def test_timetag_file_with_one_column_is_refused(tmp_path):
+    """A one-column file with exactly two rows used to be read as a
+    single (channel, time) tag. It is now refused like any other
+    file without two columns."""
+    p = tmp_path / "onecol.csv"
+    p.write_text("channel,time_ns\n0\n1\n")
+    with pytest.raises(ValueError, match="two columns"):
+        load_timetags_csv(p)

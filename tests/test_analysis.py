@@ -104,3 +104,23 @@ def test_register_platform_validation():
     with pytest.raises(ValueError):
         register_platform("not a platform")
     assert "BAD" not in PLATFORMS and "BAD2" not in PLATFORMS
+
+
+def test_input_grid_coarser_than_analysis_grid_is_refused():
+    """Data binned more coarsely than the analysis grid (1 ns by
+    default) cannot be re-binned onto it: some analysis bins stay
+    empty. analyze_histogram used to fit that comb of empty and full
+    bins and return a wrong g2(0) with ok=True; it is now refused,
+    and the same data pass once the analysis grid is as coarse as
+    the data."""
+    rng = np.random.default_rng(0)
+    site = _site(1)
+    cfg_in = HBTConfig(tau_max=90.0, n_bins=90, sigma_irf=0.35)   # 2 ns bins
+    counts = rng.poisson(expected_histogram(site, 30.0, cfg_in)).astype(float)
+    with pytest.raises(ValueError, match="coarser"):
+        analyze_histogram(cfg_in.bin_centers, counts, T_s=30.0,
+                          n_bootstrap=0)
+    cfg_2ns = HBTConfig(tau_max=61.0, n_bins=61, sigma_irf=0.35)
+    res = analyze_histogram(cfg_in.bin_centers, counts, T_s=30.0,
+                            cfg=cfg_2ns, n_bootstrap=0)
+    assert res["ok"]

@@ -10,10 +10,14 @@ from sparq.pulsed import (
     peak_shape,
 )
 
+# np.trapezoid exists from NumPy 2.0; np.trapz is its older name
+# (the package allows NumPy >= 1.24)
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
 
 def test_peak_shape_has_unit_area():
     t = np.linspace(-60, 60, 12001)
-    area = np.trapezoid(peak_shape(t, 1.2, 0.5), t)
+    area = _trapezoid(peak_shape(t, 1.2, 0.5), t)
     assert abs(area - 1.0) < 1e-3
 
 
