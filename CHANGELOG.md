@@ -1,5 +1,119 @@
 # Changelog
 
+## 0.10.0 (2026-09-24)
+
+Works through the limits listed in 0.9.1, and corrects several results
+that were wrong without an error.
+
+### Added
+
+- Other dip shapes: `sparq.models` with `fit_model` (exact Poisson
+  likelihood, goodness-of-fit p-value, AIC), `goodness_of_fit`
+  (p-value by simulation), `g2_model` and `exp_conv_gauss_complex`.
+  Models: "three_level", "multi_exponential" (several shoulders) and
+  "coherent" (a two-level emitter driven by a laser, from its exact
+  Lindblad master equation).
+- `analyze_histogram`: `singles_cps` (the detectors' count rates fix
+  the flat level; with them, 15 simulated runs per case were all
+  within 0.06 of the truth), `fit_p_value`, `fit`, `at_bound`,
+  `g2_0_widened`, `bound_matters` (with a RuntimeWarning), and
+  `rebin`. `fit_g2_histogram`: `return_details`, `c0_prior`,
+  `check_bounds`, `var`. Search ranges may be "auto" in
+  `analyze_histogram`, `fit_g2_histogram` and `profile_likelihood_ci`;
+  `profile_likelihood_ci` reports `at_bound`.
+- `locate_dip`: the dip position with its significance and whether
+  another place is about as significant; `analyze_histogram` returns
+  `dip_ambiguous` and warns when the dip does not stand out.
+- `rebin_real(method="split")`, the new default: proportional sharing
+  of input bins, the dip center found to a fraction of a bin by
+  symmetry, and `return_variance`.
+- `HBTConfig.bin_average` (default True) and `HBTConfig.bin_nodes`:
+  the simulator and the fits average g2 over each bin.
+- `bayesian_g2_model` / `ModelPosterior` (`sparq.posterior`): the
+  posterior of g2(0) itself under the three-level model, with the
+  flat-level scale integrated out exactly, sampled with an
+  affine-invariant ensemble sampler (`stretch_sampler`).
+- `certification_probability` and `assured_acquisition_time`: exact
+  planning over the Poisson scatter of runs.
+- `WindowSPRT`: a sequential test on the window counts, conditional on
+  their total, whose error bounds hold for any count rate and over
+  whole ranges of g2.
+- `heralded_source` and `heralded_from_car`: exact CAR and heralded
+  g2(0) for click/no-click detectors with efficiencies, dark counts
+  and any number of thermal modes; `modes=` and `car_definition=` in
+  `heralded_g2_limit` and `car_for_purity`.
+- `sparq.ptu`: `read_ptu` (all twelve PicoQuant T2/T3 record types),
+  `load_ptu_timetags` and `save_ptu_t2`.
+- Fast simulator: exact blinking (`site_g2`), `dead_time_ns` in
+  `expected_histogram` with `deadtime_throughput` (dead-time losses
+  for correlated light), `mean_detected_rate_cps`.
+- `rates_for_params`: the exact rates for a given (tau1, tau2, a).
+
+### Fixed
+
+- The photon-by-photon simulator's g2 was not the site's (approximate
+  rate mapping; for tau1 = 8, tau2 = 100, a = 1.5 the shelving time
+  came out 43 ns). It now uses `rates_for_params`. It also thins the
+  photons block by block (it used to keep every emitted photon in
+  memory first) and
+  draws blinking periods in blocks (microsecond blinking used to take
+  one Python step per period). Its random stream therefore differs
+  from 0.9.1.
+- The fast simulator's blinking added a flat level at every delay,
+  filling the dip, and switched the background off with the emitter.
+  Now exact, and consistent with the photon-by-photon simulator.
+- The simulator and the fits used g2 at bin centers; real bins hold
+  the average (noise-free fit on 1 ns bins: 0.086 instead of 0.0975).
+- Re-binning with whole input bins gave a ripple and an off-center
+  zero-delay bin (still available as `method="whole"`).
+- `heralded_g2_limit(car, "thermal")` used the net CAR while the
+  Poissonian branch used the raw one; both now use the raw CAR C/A.
+  Values for "thermal" change (at CAR 10: 0.3800, was 0.3471);
+  `car_definition="net"` gives the 0.9.1 values. The documentation
+  no longer calls the formulas lower limits.
+- `_exp_conv_gauss` (the jitter blur used by the simulator and the
+  fits) lost all precision for lifetimes below about a seventh of the
+  pair jitter and returned NaN far from zero delay; it is now computed
+  with `scipy.special.erfcx`.
+- `rebin_real` left grid bins empty or partly empty, silently, when
+  the analysis window around the dip reached beyond the recorded
+  delays; this is now refused with the largest `tau_max` that fits.
+  The dip is located as the most significant local minimum over a
+  range of widths and refined by symmetry (the 0.9.1 smoothed minimum,
+  still used by `method="whole"`, missed narrow dips inside bunching
+  peaks), and the bootstrap of `analyze_histogram` locates it anew in
+  every copy.
+- The README's accuracy claims for `analyze_histogram` came from one
+  seeded run each; they now come from many runs.
+- `train_model` and `DiscreteSAC.update` no longer warn when turning
+  losses into numbers.
+
+### Changed behaviour to note
+
+- `heralded_g2_limit(car, "thermal")` refuses a raw CAR below 2 (a
+  single-mode source cannot give one); 0.9.1 accepted any CAR >= 1.
+- `simulate_photon_stream` refuses sites for which no three-level rates
+  exist (for example `tau2` <= `tau1` with `a` > 0), which 0.9.1
+  simulated with its approximate rates.
+- `analyze_histogram` and `rebin_real` refuse analysis windows that
+  reach beyond the data (see Fixed).
+- `analyze_histogram`'s default re-binning, the bin averaging and the
+  per-copy dip location change its results slightly for the same data;
+  `rebin="whole"` and `HBTConfig(bin_average=False)` give the 0.9.1
+  re-binning and model values (but also refuse windows beyond the
+  data).
+
+### Tests
+
+- 172 tests (88 before). New files: test_simulators, test_analysis_010,
+  test_models, test_posterior, test_assurance, test_window_sprt,
+  test_heralded_exact, test_ptu, test_ml_behaviour.
+- test_cw_analysis_flags_a_pair now passes the singles rates (the
+  histogram-only fit it used passed for its seed only); the heralded
+  tests use the raw-CAR thermal formula.
+- CI installs the independent PTU readers `ptufile` and `phconvert`
+  where they install; the PTU cross-checks skip without them.
+
 ## 0.9.1 (2026-09-22)
 
 Bug fixes for three inputs that gave wrong results without an error,
