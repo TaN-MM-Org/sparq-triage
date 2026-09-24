@@ -23,6 +23,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e .[test]
+      - name: Independent PTU readers for the cross-checks (optional)
+        run: |
+          pip install ptufile || echo "ptufile not available here"
+          pip install phconvert tables || echo "phconvert not available here"
       - name: Run the test suite
         run: pytest tests -q
 
