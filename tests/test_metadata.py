@@ -27,7 +27,9 @@ def test_core_import_is_torch_free():
         del sys.modules[k]
     sys.modules["torch"] = None  # any 'import torch' now fails loudly
     try:
-        for mod in ("sparq.physics", "sparq.exact", "sparq.pulsed"):
+        for mod in ("sparq.physics", "sparq.exact", "sparq.pulsed",
+                    "sparq.models", "sparq.posterior", "sparq.ptu",
+                    "sparq.lab", "sparq.sequential", "sparq.heralded"):
             importlib.reload(importlib.import_module(mod))
     finally:
         del sys.modules["torch"]

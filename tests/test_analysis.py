@@ -47,9 +47,17 @@ def test_cw_analysis_flags_a_pair():
     site = _site(2)                                    # g2(0) = 0.45...
     assert 0.5 < site.g2_0 or site.g2_0 < 0.5          # just evaluate it
     delay, counts = _cw_data(site, T_s=60.0, offset_ns=-3.0, rng=rng)
-    res = analyze_histogram(delay, counts, T_s=60.0, n_bootstrap=100, seed=3)
+    # 0.10.0: with the detectors' singles rates the flat level is fixed
+    # and the pair is measured closely. (Up to 0.9.1 this test used the
+    # histogram alone with a 0.12 tolerance and passed for this seed;
+    # over 40 seeds such fits miss by more than 0.12 in about a fifth
+    # of runs -- see test_analysis_010.py.)
+    res = analyze_histogram(delay, counts, T_s=60.0, n_bootstrap=100, seed=3,
+                            singles_cps=(75e3, 75e3))
     assert res["ok"]
-    assert abs(res["g2_0"] - site.g2_0) < 0.12
+    assert abs(res["g2_0"] - site.g2_0) < 0.05
+    assert res["g2_0_low"] <= site.g2_0 + 0.02 and \
+        site.g2_0 - 0.02 <= res["g2_0_high"]
     assert res["single_emitter"] == (res["g2_0"] < 0.5)
 
 
