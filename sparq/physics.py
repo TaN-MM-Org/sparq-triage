@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import numpy as np
 from dataclasses import dataclass, field, asdict
-from scipy.special import erf
+from scipy.special import erf, erfcx  # noqa: F401 (erf kept for users)
 
 # ----------------------------------------------------------------------
 # Analytic correlation functions
@@ -60,20 +60,32 @@ def g2_measured(tau, tau1, tau2, a, n_emitters=1, rho=1.0, sigma_irf=0.0):
 
 
 def _exp_conv_gauss(tau, T, s):
-    """Convolution of exp(-|tau|/T) with a normalized Gaussian of std s."""
+    """Convolution of exp(-|tau|/T) with a normalized Gaussian of std s.
+
+    Closed form, 1/2 e^{s^2/2T^2} [ e^{-t/T} erfc((s/T - t/s)/sqrt2)
+    + e^{t/T} erfc((s/T + t/s)/sqrt2) ], evaluated through the scaled
+    function erfcx(u) = e^{u^2} erfc(u): each term equals
+    e^{-t^2/2s^2} erfcx(u) (and, for u < 0,
+    2 e^{s^2/2T^2 -+ t/T} - e^{-t^2/2s^2} erfcx(-u)). Up to 0.9.1 the
+    product e^{s^2/2T^2} (1 - erf(.)) was formed directly, which loses
+    all precision once T is below about s/7 and overflows to NaN far
+    from zero delay (new in 0.10.0; T and tau may be arrays that
+    broadcast).
+    """
     tau = np.asarray(tau, dtype=float)
     if s <= 1e-12:
         return np.exp(-np.abs(tau) / T)
-    # closed form: 1/2 e^{s^2/2T^2} [ e^{-t/T} erfc((s/T - t/s)/sqrt2)
-    #                               + e^{ t/T} erfc((s/T + t/s)/sqrt2) ]
+    T = np.asarray(T, dtype=float)
     z = s / T
-    arg_p = (z - tau / s) / np.sqrt(2.0)
-    arg_m = (z + tau / s) / np.sqrt(2.0)
-    with np.errstate(over="ignore"):
-        out = 0.5 * np.exp(0.5 * z ** 2) * (
-            np.exp(-tau / T) * (1.0 - erf(arg_p))
-            + np.exp(tau / T) * (1.0 - erf(arg_m))
-        )
+    g = np.exp(-0.5 * (tau / s) ** 2)
+    out = 0.0
+    for sg in (1.0, -1.0):
+        u = (z - sg * tau / s) / np.sqrt(2.0)
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            pos = g * erfcx(u)
+            neg = (2.0 * np.exp(0.5 * z ** 2 - sg * tau / T)
+                   - g * erfcx(-u))
+        out = out + 0.5 * np.where(u >= 0.0, pos, neg)
     return np.clip(out, 0.0, 1.0)
 
 
@@ -231,9 +243,23 @@ def sample_site(rng, platform="NV", n_probs=(0.42, 0.30, 0.18, 0.10)):
 
 @dataclass
 class HBTConfig:
+    """The histogram grid: bins of width 2 tau_max / n_bins from
+    -tau_max to +tau_max (ns), and the per-detector timing jitter.
+
+    bin_average (new in 0.10.0, default True): a correlator counts every
+    pair whose delay falls anywhere in a bin, so the expected count of a
+    bin is g2 AVERAGED over the bin. With True the simulator and the
+    fits use that average (8-point Gauss-Legendre, 4 points on each half
+    of the bin, so the kink of an unblurred dip at zero delay falls on a
+    node boundary). With False they use g2 at the bin center, as every
+    version up to 0.9.1 did; that biases fits of real data, whose bins
+    are averages (for the example site of the README, g2(0) 0.086
+    instead of 0.0975 on noise-free 1 ns bins).
+    """
     tau_max: float = 60.5        # ns  (window +-tau_max)
     n_bins: int = 121            # odd -> a bin centered at tau = 0
     sigma_irf: float = 0.35      # ns, per-detector IRF sigma (~0.8 ns FWHM)
+    bin_average: bool = True
 
     @property
     def bin_width(self):
@@ -243,24 +269,118 @@ class HBTConfig:
     def bin_centers(self):
         return (np.arange(self.n_bins) + 0.5) * self.bin_width - self.tau_max
 
+    def bin_nodes(self):
+        """(nodes, weights): delays (n_bins, M) at which g2 is evaluated
+        and weights (M,) that turn those values into the bin value
+        (M = 8 with bin_average, else 1 at the center)."""
+        c = self.bin_centers
+        if not self.bin_average:
+            return c[:, None], np.ones(1)
+        x, wt = np.polynomial.legendre.leggauss(4)
+        half = 0.5 * self.bin_width
+        off = np.concatenate([(x - 1.0) * 0.5 * half,      # left half
+                              (x + 1.0) * 0.5 * half])     # right half
+        return c[:, None] + off[None, :], np.concatenate([wt, wt]) / 4.0
 
-def expected_histogram(site: EmitterSite, T_s: float, cfg: HBTConfig):
-    """Mean coincidence counts per bin for acquisition time T_s (seconds)."""
+
+def mean_detected_rate_cps(site: EmitterSite) -> float:
+    """Time-averaged detected rate (counts/s, both detectors, before
+    dead time). `rate_kcps` is the rate while the emitter is on; a
+    blinking emitter's light is off for a share t_off/(t_on + t_off) of
+    the time, while the background (share 1 - rho) keeps going, as in
+    the photon-by-photon simulator (new in 0.10.0; up to 0.9.1 the fast
+    simulator switched the background off with the emitter)."""
     p = site.params
-    r_tot = p["rate_kcps"] * 1e3                       # detected cps, both arms
-    duty = 1.0
-    if p["blinking"]:
-        duty = p["t_on_ms"] / (p["t_on_ms"] + p["t_off_ms"])
-    r_a = r_b = 0.5 * r_tot * duty
-    g2 = g2_measured(cfg.bin_centers, p["tau1"], p["tau2"], p["a"],
-                     site.n_emitters, p["rho"], cfg.sigma_irf)
-    # blinking multiplies long-timescale g2 by a bunching factor ~1/duty at
-    # tau << t_on; within a +-60 ns window this is a flat multiplicative
-    # factor on the correlated part:
-    if p["blinking"]:
-        g2 = 1.0 + (g2 - 1.0) + (1.0 / duty - 1.0) * (p["rho"] ** 2)
+    r_on = p["rate_kcps"] * 1e3
+    if not p["blinking"]:
+        return r_on
+    duty = p["t_on_ms"] / (p["t_on_ms"] + p["t_off_ms"])
+    return r_on * (p["rho"] * duty + (1.0 - p["rho"]))
+
+
+def expected_histogram(site: EmitterSite, T_s: float, cfg: HBTConfig,
+                       dead_time_ns: float = 0.0):
+    """Mean coincidence counts per bin for acquisition time T_s (seconds).
+
+    Blinking (new in 0.10.0, exact): the emitter light is gated by an
+    on/off (telegraph) process with exponential on and off times, the
+    same process the photon-by-photon simulator uses, and independent
+    of the emitter's own dynamics. The emitter part of g2 is then
+    multiplied exactly by the gate's own correlation
+        g2_gate(tau) = 1 + (t_off/t_on) exp(-|tau|/tau_c),
+        1/tau_c = 1/t_on + 1/t_off,
+    and the background, which is not gated, dilutes the result with the
+    time-averaged signal share rho_b = rho d / (rho d + 1 - rho),
+    d = t_on/(t_on + t_off):
+        g2(tau) = 1 + rho_b^2 (g2_gate(tau) g2_N(tau) - 1).
+    Blinking therefore raises g2 around the dip but cannot fill the dip
+    itself. (Up to 0.9.1 blinking added a flat level everywhere,
+    including at zero delay.) The instrument-response blur is applied
+    to g2_N only, which is exact while tau_c is much longer than the
+    jitter (microseconds and longer; the gate barely changes over a
+    nanosecond).
+
+    dead_time_ns (new in 0.10.0): non-paralyzable dead time of each
+    detector. It lowers each detector's counted rate (see
+    `deadtime_throughput`) and so the flat level. Any change it makes
+    to the shape of g2 is not modelled; in the tests the result agrees
+    with the photon-by-photon simulation (45 ns dead time, 300 kcps per
+    detector) within Poisson noise. Afterpulsing is not modelled here;
+    the photon-by-photon simulator has it.
+    """
+    r_a = r_b = 0.5 * mean_detected_rate_cps(site)
+    td = float(dead_time_ns)
+    if td < 0 or not np.isfinite(td):
+        raise ValueError("dead_time_ns must be finite and >= 0")
+    if td > 0:
+        r_a = r_b = deadtime_throughput(site, r_a, td)
+    nodes, wts = cfg.bin_nodes()
+    g2 = site_g2(site, nodes, cfg.sigma_irf) @ wts
     flat = r_a * r_b * (cfg.bin_width * 1e-9) * T_s
     return flat * g2
+
+
+def site_g2(site: EmitterSite, tau, sigma_irf: float = 0.0):
+    """The normalized g2(tau) the fast simulator uses for a site: the
+    N-emitter model with background, instrument response and, for a
+    blinking site, the exact on/off gate (see `expected_histogram`)."""
+    p = site.params
+    tau = np.asarray(tau, dtype=float)
+    if not p["blinking"]:
+        return g2_measured(tau, p["tau1"], p["tau2"], p["a"],
+                           site.n_emitters, p["rho"], sigma_irf)
+    duty = p["t_on_ms"] / (p["t_on_ms"] + p["t_off_ms"])
+    rho_b = p["rho"] * duty / (p["rho"] * duty + 1.0 - p["rho"])
+    g2_n = g2_measured(tau, p["tau1"], p["tau2"], p["a"],
+                       site.n_emitters, 1.0, sigma_irf)
+    t_on, t_off = p["t_on_ms"] * 1e6, p["t_off_ms"] * 1e6          # ns
+    tau_c = t_on * t_off / (t_on + t_off)
+    gate = 1.0 + (t_off / t_on) * np.exp(-np.abs(tau) / tau_c)
+    return 1.0 + rho_b ** 2 * (gate * g2_n - 1.0)
+
+
+def deadtime_throughput(site: EmitterSite, rate_cps: float,
+                        dead_time_ns: float) -> float:
+    """Counted rate of one detector with non-paralyzable dead time that
+    receives `rate_cps` of this site's light (new in 0.10.0).
+
+    For uncorrelated (Poisson) light the exact result is
+    r / (1 + r tau_d). Light that is antibunched or bunched on the
+    scale of tau_d loses fewer or more counts, because the chance that
+    the next photon arrives while the detector is blind is
+    r * I with I = integral_0^tau_d g2(tau) dtau. This function returns
+    r / (1 + r I), which is exact for Poisson light (g2 = 1, I = tau_d)
+    and correct to first order in r tau_d otherwise; the tests compare
+    it with the photon-by-photon detector simulation.
+    """
+    r = float(rate_cps)
+    td = float(dead_time_ns)
+    if td == 0.0:
+        return r
+    t = np.linspace(0.0, td, 4001)
+    g = site_g2(site, t, 0.0)
+    I_ns = float(np.sum(0.5 * (g[1:] + g[:-1]) * np.diff(t)))
+    return r / (1.0 + r * I_ns * 1e-9)
 
 
 def sample_histogram(site, T_s, cfg, rng):
@@ -290,24 +410,51 @@ class DetectorImpairments:
     sigma_irf_ns: float = 0.35        # Gaussian timing jitter (per detector)
 
 
+def _site_rates(tau1, tau2, a):
+    """Exact rates for the photon-by-photon simulator: pump fraction 0.4
+    (the package's historical choice) when it works, otherwise the
+    smallest pump fraction that does (stated in the message of
+    `rates_for_params`)."""
+    from .exact import rates_for_params
+    try:
+        return rates_for_params(tau1, tau2, a, 0.4)
+    except ValueError as err:
+        l1, l2 = 1.0 / tau1, 1.0 / tau2
+        D = (1.0 + a) * l1 - a * l2
+        k_se = l1 * l2 / D if D > 0 else np.nan
+        Q = l1 + l2 - k_se
+        R = k_se * (D - l1 - l2 + k_se)
+        f_min = 4.0 * R / Q ** 2 if Q > 0 else np.inf
+        if not (R > 0 and 0.4 < f_min < 1.0):
+            raise ValueError(f"the photon-by-photon simulator cannot "
+                             f"realize tau1={tau1}, tau2={tau2}, a={a}: "
+                             f"{err}") from None
+        return rates_for_params(tau1, tau2, a, min(f_min * (1 + 1e-9),
+                                                   0.5 * (1 + f_min)))
+
+
+def _emission_rate_per_ns(k_exc, k_r, k_es, k_se):
+    """Steady-state photon emission rate k_r p_e of one emitter (1/ns)."""
+    shelf = k_es / k_se if k_es > 0 else 0.0
+    p_e = 1.0 / (1.0 + (k_r + k_es) / k_exc + shelf)
+    return k_r * p_e
+
+
 def _simulate_emission_times(p: dict, n_emitters: int, T_s: float,
-                             rng: np.random.Generator):
-    """Exact CTMC emission times for n independent three-level emitters.
+                             rng: np.random.Generator, keep: float = 1.0):
+    """Exact CTMC emission times for n independent three-level emitters,
+    each photon kept with probability `keep` (the collection
+    efficiency; applied block by block, so memory scales with the kept
+    photons, not with all emitted ones).
 
     Per cycle from |g>: wait Exp(k_exc) to |e>; from |e>, with branching
     ratio phi emit a photon and return to |g>, else shelve to |s> and wait
-    Exp(k_se).  Effective rates are chosen to reproduce the analytic
-    (tau1, tau2, a) of the site at its detected count rate.
+    Exp(k_se).  The rates are the exact inverse of the site's
+    (tau1, tau2, a) (`sparq.exact.rates_for_params`, new in 0.10.0), so
+    the emitted stream has exactly the g2 of `g2_three_level`; up to
+    0.9.1 an approximate mapping was used, whose g2 differed.
     """
-    tau1, tau2, a = p["tau1"], p["tau2"], p["a"]
-    # map (tau1, tau2, a) -> CTMC rates (ns^-1); see supplementary note
-    k_tot = 1.0 / tau1                    # relaxation rate of the g-e manifold
-    k_exc = 0.4 * k_tot
-    k_r = k_tot - k_exc                  # spontaneous decay
-    k_se = 1.0 / tau2
-    # shelving branching chosen so the bunching amplitude matches a:
-    #   a = k_es/k_se * k_exc /(k_exc + k_r) approximately at CW
-    k_es = a * k_se * (k_exc + k_r) / max(k_exc, 1e-9)
+    k_exc, k_r, k_es, k_se = _site_rates(p["tau1"], p["tau2"], p["a"])
     T_ns = T_s * 1e9
     all_times = []
     p_shelve = k_es / (k_r + k_es)
@@ -315,19 +462,22 @@ def _simulate_emission_times(p: dict, n_emitters: int, T_s: float,
         times = []
         t = 0.0
         # vectorized block simulation
-        block = max(1024, int(T_ns * k_exc * 0.6 / max(1.0, 1)))
-        block = min(block, 4_000_000)
+        block = max(1024, int(T_ns * k_exc * 0.6))
+        block = min(block, 2_000_000)
         while t < T_ns:
             n = block
             dt_g = rng.exponential(1.0 / k_exc, n)
             dt_e = rng.exponential(1.0 / (k_r + k_es), n)
             shelved = rng.random(n) < p_shelve
-            dt_s = np.where(shelved, rng.exponential(1.0 / k_se, n), 0.0)
+            dt_s = np.where(shelved, rng.exponential(1.0 / k_se, n), 0.0) \
+                if k_es > 0 else np.zeros(n)
             cyc = dt_g + dt_e + dt_s
             tt = t + np.cumsum(cyc)
             emit_t = tt - dt_s              # emission occurs at end of |e>
-            emit = ~shelved
-            times.append(emit_t[emit & (emit_t < T_ns)])
+            emit = ~shelved & (emit_t < T_ns)
+            if keep < 1.0:
+                emit &= rng.random(n) < keep
+            times.append(emit_t[emit])
             t = tt[-1]
         all_times.append(np.concatenate(times))
     em = np.sort(np.concatenate(all_times))
@@ -338,14 +488,21 @@ def simulate_photon_stream(site: EmitterSite, T_s: float,
                            rng: np.random.Generator,
                            imp: DetectorImpairments | None = None,
                            include_blinking=True):
-    """Full MC HBT experiment. Returns (t_A, t_B) detector timestamp arrays (ns)."""
+    """Full MC HBT experiment. Returns (t_A, t_B) detector timestamp arrays (ns).
+
+    `rate_kcps` is the detected rate while the emitter is on (both
+    detectors, before dead time): a share `rho` of it comes from the
+    emitter, the rest is background. Blinking switches the emitter
+    light off and on; the background keeps going.
+    """
     p = site.params
-    em = _simulate_emission_times(p, site.n_emitters, T_s, rng)
+    rates = _site_rates(p["tau1"], p["tau2"], p["a"])
     # collection efficiency chosen to hit the site's detected signal rate
+    # (from the exact steady-state emission rate, new in 0.10.0)
     r_signal = p["rate_kcps"] * 1e3 * p["rho"]
-    emission_rate = len(em) / T_s if len(em) else 1.0
+    emission_rate = site.n_emitters * _emission_rate_per_ns(*rates) * 1e9
     eta = min(1.0, r_signal / emission_rate)
-    det = em[rng.random(len(em)) < eta]
+    det = _simulate_emission_times(p, site.n_emitters, T_s, rng, keep=eta)
     # blinking telegraph gate
     if include_blinking and p["blinking"]:
         det = _telegraph_gate(det, p["t_on_ms"] * 1e6, p["t_off_ms"] * 1e6,
@@ -365,16 +522,34 @@ def simulate_photon_stream(site: EmitterSite, T_s: float,
 
 
 def _telegraph_gate(times, ton_ns, toff_ns, T_ns, rng):
-    """Apply random-telegraph on/off blinking to a photon stream."""
-    edges, state, t = [0.0], rng.random() < ton_ns / (ton_ns + toff_ns), 0.0
-    states = [state]
-    while t < T_ns:
-        t += rng.exponential(ton_ns if state else toff_ns)
-        edges.append(t)
-        state = not state
-        states.append(state)
-    idx = np.searchsorted(np.array(edges), times, side="right") - 1
-    on = np.array(states)[idx]
+    """Apply random-telegraph on/off blinking to a photon stream.
+
+    The first state is drawn from the stationary probabilities and every
+    on (off) period is exponential with mean ton_ns (toff_ns), so the
+    gate is a stationary telegraph process. Periods are generated in
+    vectorized blocks (new in 0.10.0; the earlier loop drew one period
+    per Python step, which was too slow for microsecond blinking).
+    """
+    state0 = rng.random() < ton_ns / (ton_ns + toff_ns)
+    n_est = int(2.2 * T_ns / (ton_ns + toff_ns)) + 16
+    edges = [np.zeros(1)]
+    t_end = 0.0
+    start_on = state0
+    while t_end < T_ns:
+        n = n_est if n_est % 2 == 0 else n_est + 1
+        first = ton_ns if start_on else toff_ns
+        second = toff_ns if start_on else ton_ns
+        dur = np.empty(n)
+        dur[0::2] = rng.exponential(first, n // 2)
+        dur[1::2] = rng.exponential(second, n // 2)
+        e = t_end + np.cumsum(dur)
+        edges.append(e)
+        t_end = float(e[-1])        # an even number of periods keeps the
+        #                             phase: the next block starts in the
+        #                             same state as this one
+    edges = np.concatenate(edges)
+    idx = np.searchsorted(edges, times, side="right") - 1
+    on = (idx % 2 == 0) == state0
     return times[on]
 
 

@@ -65,9 +65,70 @@ def effective_params(k_exc, k_r, k_es, k_se):
 
 
 def rates_from_site(tau1, tau2, a):
-    """The twin's nominal mapping (tau1,tau2,a) -> CTMC rates (see physics)."""
+    """The approximate mapping (tau1, tau2, a) -> rates used by the
+    photon-by-photon simulator up to 0.9.1.
+
+    It does NOT reproduce (tau1, tau2, a): `effective_params` of its
+    rates differ (for tau1 = 15, tau2 = 250, a = 0.3 ns they are
+    14.6 ns, 191 ns and 0.336). Kept for reproducing old results; use
+    `rates_for_params` for rates whose g2 is exactly the requested one.
+    """
     k_tot = 1.0 / tau1
     k_exc, k_r = 0.4 * k_tot, 0.6 * k_tot
     k_se = 1.0 / tau2
     k_es = a * k_se * (k_exc + k_r) / k_exc
     return k_exc, k_r, k_es, k_se
+
+
+def rates_for_params(tau1, tau2, a, pump_fraction=0.4):
+    """Rates (k_exc, k_r, k_es, k_se) whose exact g2 is
+    1 - (1 + a) exp(-|tau|/tau1) + a exp(-|tau|/tau2)  (new in 0.10.0).
+
+    The ratio k_exc / (k_exc + k_r) is fixed at `pump_fraction`; the
+    other three rates then follow in closed form. With l1 = 1/tau1,
+    l2 = 1/tau2, S = l1 + l2, P = l1 l2 and D = (1 + a) l1 - a l2 (the
+    slope of g2 at zero delay), matching the eigenvalues of the rate
+    matrix and that slope gives
+        k_se = P / D,
+        k_exc + k_r + k_es = S - k_se =: Q,
+        pump_fraction (k_exc + k_r) k_es = k_se (D - S + k_se) =: R,
+    a quadratic for k_es. Of its two roots (both give the same g2)
+    the smaller shelving rate k_es is returned. The tests check the
+    round trip through `effective_params` to 1e-9.
+
+    Raises ValueError when tau1 >= tau2 (with a > 0), a < 0, or when no
+    rate set with this pump fraction exists; the message then names
+    the smallest pump fraction that works, if any below 1 does.
+    """
+    tau1 = float(tau1)
+    tau2 = float(tau2)
+    a = float(a)
+    f = float(pump_fraction)
+    if not (tau1 > 0 and tau2 > 0 and np.isfinite(tau1) and np.isfinite(tau2)):
+        raise ValueError("tau1 and tau2 must be positive and finite")
+    if not (a >= 0 and np.isfinite(a)):
+        raise ValueError("a must be finite and >= 0")
+    if not (0.0 < f < 1.0):
+        raise ValueError("pump_fraction must lie in (0, 1)")
+    l1, l2 = 1.0 / tau1, 1.0 / tau2
+    if a == 0.0:
+        return f * l1, (1.0 - f) * l1, 0.0, l2
+    if not tau1 < tau2:
+        raise ValueError("with a > 0 the shelving time tau2 must exceed "
+                         "the antibunching time tau1")
+    S, P = l1 + l2, l1 * l2
+    D = (1.0 + a) * l1 - a * l2
+    k_se = P / D
+    Q = S - k_se
+    R = k_se * (D - S + k_se)
+    if not (R > 0.0 and Q > 0.0):
+        raise ValueError("no three-level rate model has this g2")
+    f_min = 4.0 * R / Q ** 2
+    if f < f_min:
+        hint = (f"; the smallest pump_fraction that works is {f_min:.4g}"
+                if f_min < 1.0 else "; no pump fraction below 1 works")
+        raise ValueError(f"no rate set with pump_fraction {f} has this "
+                         f"g2{hint}")
+    k_es = 0.5 * (Q - np.sqrt(max(Q * Q - 4.0 * R / f, 0.0)))
+    K = Q - k_es
+    return f * K, (1.0 - f) * K, k_es, k_se

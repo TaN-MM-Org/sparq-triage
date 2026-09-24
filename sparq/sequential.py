@@ -112,3 +112,114 @@ class SPRTCertifier:
         t_accept = ((1 - self.beta) * A + self.beta * B) / d1
         t_reject = -(self.alpha * A + (1 - self.alpha) * B) / d0
         return float(t_accept), float(t_reject)
+
+
+class WindowSPRT:
+    """Sequential test that needs no emitter model and no count rate
+    (new in 0.10.0).
+
+    It uses the same two windows as `sparq.bayes.bayesian_g2`: n0
+    central bins and nr far reference bins. If the flat (uncorrelated)
+    level is lam per bin and the window-averaged g2 is g, the central
+    counts have mean g lam per bin and the reference counts lam. Given
+    the total number of counts that fall in the two windows, the number
+    k0 in the central window is binomial with success probability
+
+        p(g) = n0 g / (n0 g + nr),
+
+    which does not involve lam. The test is Wald's sequential
+    probability ratio test between p(g_accept) and p(g_reject) on these
+    counts, conditionally on the totals, so:
+
+    * nothing about the emitter (lifetimes, shoulder, rate) and nothing
+      about the count rate is assumed; the rate may even change from one
+      increment to the next;
+    * because the binomial has a monotone likelihood ratio in g, the
+      error bounds hold for the whole ranges, not just the two values:
+      for every g >= g_reject the probability of wrongly accepting is at
+      most alpha / (1 - beta), and for every g <= g_accept the
+      probability of wrongly rejecting is at most beta / (1 - alpha)
+      (Wald's inequalities; they include the overshoot of the last
+      increment). The tests check both on simulated runs.
+
+    What it tests: the window-averaged g2 of `bayesian_g2` (an upper
+    bound on g2(0) when the dip is wider than the window), with
+    "accept" meaning g <= g_accept and "reject" meaning g >= g_reject.
+    Between the two values either decision may come out.
+
+    Feed each new increment's histogram (on the grid `cfg`, centered on
+    the dip) with `update`; its time is not needed.
+    """
+
+    def __init__(self, g_accept=0.25, g_reject=0.5,
+                 cfg: HBTConfig | None = None, alpha: float = 0.05,
+                 beta: float = 0.05, n_center_bins: int = 1,
+                 lo_frac: float = 0.65):
+        if not (0 < alpha < 1 and 0 < beta < 1):
+            raise ValueError("alpha and beta must lie in (0, 1)")
+        if not (0.0 < g_accept < g_reject):
+            raise ValueError("need 0 < g_accept < g_reject")
+        self.cfg = HBTConfig() if cfg is None else cfg
+        if self.cfg.n_bins % 2 == 0:
+            raise ValueError("cfg.n_bins must be odd (a bin centered at 0)")
+        if n_center_bins < 1 or n_center_bins % 2 == 0:
+            raise ValueError("n_center_bins must be odd and >= 1")
+        tau = self.cfg.bin_centers
+        half = (n_center_bins // 2 + 0.5) * self.cfg.bin_width
+        self._m0 = np.abs(tau) < half
+        self._mr = np.abs(tau) >= lo_frac * self.cfg.tau_max
+        if int(self._m0.sum()) != n_center_bins or not self._mr.any() \
+                or np.any(self._m0 & self._mr):
+            raise ValueError("central and reference windows must be "
+                             "non-empty and must not overlap")
+        n0, nr = float(self._m0.sum()), float(self._mr.sum())
+        self.p_accept = n0 * g_accept / (n0 * g_accept + nr)
+        self.p_reject = n0 * g_reject / (n0 * g_reject + nr)
+        self._w0 = float(np.log(self.p_accept / self.p_reject))
+        self._wr = float(np.log((1 - self.p_accept) / (1 - self.p_reject)))
+        self.g_accept, self.g_reject = float(g_accept), float(g_reject)
+        self.alpha, self.beta = float(alpha), float(beta)
+        self.upper = float(np.log((1.0 - beta) / alpha))
+        self.lower = float(np.log(beta / (1.0 - alpha)))
+        self.llr = 0.0
+        self.k0 = 0.0
+        self.kr = 0.0
+        self.decision = CONTINUE
+
+    @property
+    def error_bounds(self):
+        """(bound on wrongly accepting, bound on wrongly rejecting)."""
+        return (self.alpha / (1.0 - self.beta),
+                self.beta / (1.0 - self.alpha))
+
+    def update(self, counts) -> str:
+        """Add an increment's histogram; returns 'accept', 'reject' or
+        'continue'."""
+        if self.decision != CONTINUE:
+            return self.decision
+        c = np.asarray(counts, dtype=float)
+        if c.shape != (self.cfg.n_bins,):
+            raise ValueError("counts must be on the test's histogram grid")
+        if np.any(c < 0) or not np.all(np.isfinite(c)):
+            raise ValueError("counts must be finite and non-negative")
+        k0 = float(c[self._m0].sum())
+        kr = float(c[self._mr].sum())
+        self.k0 += k0
+        self.kr += kr
+        self.llr += k0 * self._w0 + kr * self._wr
+        if self.llr >= self.upper:
+            self.decision = ACCEPT
+        elif self.llr <= self.lower:
+            self.decision = REJECT
+        return self.decision
+
+    def expected_window_counts(self):
+        """Wald's approximate expected number of window counts (central
+        plus reference) to a decision when g = g_accept and when
+        g = g_reject (it ignores the overshoot)."""
+        out = []
+        for p, pa in ((self.p_accept, 1 - self.beta),
+                      (self.p_reject, self.alpha)):
+            drift = p * self._w0 + (1 - p) * self._wr
+            out.append((pa * self.upper + (1 - pa) * self.lower) / drift)
+        return float(out[0]), float(out[1])

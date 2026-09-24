@@ -209,6 +209,7 @@ class DiscreteSAC:
             for tnet, net in ((self.q1t, self.q1), (self.q2t, self.q2)):
                 for pt, p in zip(tnet.parameters(), net.parameters()):
                     pt.mul_(1 - self.tau).add_(self.tau * p)
-        return dict(loss_q=float(loss_q), loss_pi=float(loss_pi),
-                    alpha=float(self.log_alpha.exp()),
+        return dict(loss_q=float(loss_q.detach()),
+                    loss_pi=float(loss_pi.detach()),
+                    alpha=float(self.log_alpha.exp().detach()),
                     entropy=float(entropy.mean()))

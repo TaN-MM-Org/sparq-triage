@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .physics import sample_site, expected_histogram
+from .physics import sample_site, expected_histogram, mean_detected_rate_cps
 from .datasets import CFG
 
 DWELLS = (0.25, 1.0, 4.0)
@@ -58,11 +58,8 @@ class TriageEnv:
         site = self.field[self.idx]
         mu = expected_histogram(site, T, self.cfg)
         self.hist += self.noise_rng.poisson(mu).astype(np.float32)
-        p = site.params
-        duty = 1.0
-        if p["blinking"]:
-            duty = p["t_on_ms"] / (p["t_on_ms"] + p["t_off_ms"])
-        self.singles += self.noise_rng.poisson(p["rate_kcps"] * 1e3 * duty * T)
+        self.singles += self.noise_rng.poisson(mean_detected_rate_cps(site)
+                                               * T)
         self.dwell += T
         self.t_total += T
         self._update_posterior()

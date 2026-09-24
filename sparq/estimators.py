@@ -263,7 +263,7 @@ def train_model(model, gen_fn, steps, lr=1e-3, batch=256, device="cpu",
         loss.backward()
         opt.step()
         sched.step()
-        hist_loss.append(float(loss))
+        hist_loss.append(float(loss.detach()))
         if log_every and step % log_every == 0:
             print(f"  step {step:5d}  loss {np.mean(hist_loss[-100:]):.4f}")
     model.eval()
