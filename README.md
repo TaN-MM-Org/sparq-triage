@@ -27,8 +27,10 @@ time stamps, or a PicoQuant PTU file) and answers:
   reliable?
 - Can I stop measuring early because the data already suffice, with
   error rates that hold without knowing the emitter?
-- How much do background light, blinking and detector dead time change
-  the numbers?
+- How much do background light, blinking, detector dead time and
+  afterpulsing change the numbers?
+- For a pulsed laser, what is g2(0) when the peaks of the comb
+  overlap?
 - For a heralded pair source, what purity does a measured
   coincidence-to-accidental ratio allow, with my detectors?
 
@@ -113,6 +115,13 @@ reproduces the paper itself.
   pulse number and a delay after that pulse.
 - **Dead time** -- after a click a detector is blind for a while (tens
   of ns for common single-photon detectors).
+- **Afterpulse** -- a false click that a detector sometimes gives some
+  time after a real one. `afterpulse_p` is the chance of one per click.
+- **Pulsed excitation, comb** -- with a pulsed laser the emitter gives
+  at most about one photon per pulse, so the histogram is a row of
+  peaks, one per laser period (`t_rep`, 12.5 ns at 80 MHz). g2(0) is
+  the area of the peak at zero delay divided by that of the other
+  (side) peaks.
 - **Poisson counts, standard error** -- counts of random, independent
   clicks follow the Poisson distribution: a bin that expects N counts
   scatters by about sqrt(N) from run to run. The standard error of an
@@ -137,8 +146,9 @@ everything listed under "Analysis core" below work without PyTorch.
 
 Units:
 
-- delays, lifetimes (`tau1`, `tau2`), bin widths, IRF widths and dead
-  times: nanoseconds (ns);
+- delays, lifetimes (`tau1`, `tau2`, `tau_e`), bin widths, IRF widths,
+  dead times, afterpulse delays and laser periods (`t_rep`):
+  nanoseconds (ns);
 - acquisition times (`T_s`): seconds;
 - count rates: `rate_kcps` in an `EmitterSite` is kilocounts per
   second, summed over both detectors; `r_hat` and `rate_cps` in
@@ -151,7 +161,7 @@ Units:
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with sparq-triage 0.10.0. All emitter numbers are illustrative
+printed with sparq-triage 0.11.0. All emitter numbers are illustrative
 values, not measurements. The data are simulated with a fixed random
 seed, so you get the same output.
 
@@ -216,7 +226,7 @@ approximate and errs on the large side), and
 **limits that matter** says whether the answer depends on where the
 fit's search ranges end (example 9). Your own file needs the header
 `delay_ns,counts` and one row per bin. For a pulsed-laser measurement
-(a comb of peaks), use `analyze_pulsed` instead.
+(a comb of peaks), use `analyze_pulsed` instead (example 17).
 
 Why the singles rates matter. With the flat level left to the fit, a
 stronger, slower shoulder can trade against a lower flat level, and a
@@ -795,6 +805,88 @@ photon-by-photon simulator draws. `dead_time_ns` lowers each
 detector's counted rate, and so the flat level, as a detector that is
 blind for 45 ns after each click would.
 
+### 17. Pulsed laser: fit the whole comb
+
+```python
+import numpy as np
+from sparq import HBTConfig, expected_hist_pulsed, analyze_pulsed
+
+# Illustrative pulsed measurement: 80 MHz laser (12.5 ns period),
+# 2 ns emitter lifetime, true g2(0) = 0.12, 10 s at 200 kcps,
+# 0.25 ns bins over +-60.5 ns (a comb of ten peaks).
+cfg = HBTConfig(tau_max=60.5, n_bins=484)
+mean = expected_hist_pulsed(cfg, 10.0, 2e5, g2_0=0.12, tau_e=2.0,
+                            sigma_pair=0.5, center_off=1.7)
+counts = np.random.default_rng(0).poisson(mean)
+
+old = analyze_pulsed(cfg.bin_centers, counts, method="area", n_bootstrap=0)
+new = analyze_pulsed(cfg.bin_centers, counts, ci=0.95)
+print(f"peak areas (0.10.0 default): g2(0) = {old['g2_0']:.3f}")
+print(f"comb fit (new default):      g2(0) = {new['g2_0']:.3f}, 95 % interval "
+      f"[{new['g2_0_low']:.3f}, {new['g2_0_high']:.3f}]")
+print(f"fitted lifetime {new['fit']['tau_e']:.2f} ns, jitter "
+      f"{new['fit']['sigma_pair']:.2f} ns, fit p-value {new['fit_p_value']:.2f}")
+```
+
+```
+peak areas (0.10.0 default): g2(0) = 0.000
+comb fit (new default):      g2(0) = 0.115, 95 % interval [0.091, 0.138]
+fitted lifetime 1.97 ns, jitter 0.52 ns, fit p-value 0.34
+```
+
+The usual pulsed analysis adds up the counts around each peak and
+subtracts a background level measured between the peaks. Here the
+peaks are wide enough (2 ns lifetime, 12.5 ns apart) that their tails
+fill the space between them, so that "background" is mostly peak tails,
+and subtracting it removes the whole zero-delay peak: the answer 0 is
+wrong. `analyze_pulsed` now fits the whole comb instead
+(`fit_pulsed`): every peak has the same shape (a two-sided
+exponential decay blurred by the detectors' jitter), the zero-delay
+peak has g2(0) times the area of the others, and a flat background may
+lie under all of them. The share of each peak that falls in each bin is
+computed exactly, so overlapping peaks are handled, and the counts are
+fitted by their Poisson likelihood. The interval is a profile
+likelihood interval (as in example 3). `method="area"` still gives the
+old peak-area answer. If the emitter blinks, the peaks next to zero
+delay are higher than those far away; `envelope=True` fits that, and
+then needs the detectors' count rates (`T_s`, `singles_cps`) to know
+the height of the far peaks, unless the record reaches them.
+
+### 18. Afterpulsing in the fast simulator
+
+```python
+from sparq import EmitterSite, HBTConfig, expected_histogram, deadtime_throughput
+
+site = EmitterSite(dict(tau1=15.0, tau2=250.0, a=0.3, rate_kcps=150.0,
+                        rho=0.95, blinking=False), n_emitters=1)
+cfg = HBTConfig()
+c = cfg.n_bins // 2                                # the zero-delay bin
+for p in (0.0, 0.01, 0.05):                        # afterpulse probability
+    hist = expected_histogram(site, 30.0, cfg, dead_time_ns=45.0,
+                              afterpulse_p=p, afterpulse_tau_ns=80.0)
+    # each detector counts its clicks plus its afterpulses
+    counted = deadtime_throughput(site, 75e3, 45.0) * (1 + p)
+    level = counted ** 2 * cfg.bin_width * 1e-9 * 30.0
+    print(f"afterpulsing {p:.2f}: zero-delay bin / accidental level "
+          f"{hist[c] / level:.4f}")
+```
+
+```
+afterpulsing 0.00: zero-delay bin / accidental level 0.1321
+afterpulsing 0.01: zero-delay bin / accidental level 0.1523
+afterpulsing 0.05: zero-delay bin / accidental level 0.2275
+```
+
+An afterpulse repeats a detector's click some time later, and that
+repeated click pairs with the other detector's clicks as if it were
+new light. The result fills the dip, by about twice the afterpulse
+probability (0.02 for 1 %), just as background light does, and adds a
+shallow copy of the dip near plus and minus the dead time.
+`expected_histogram` now includes it with the same detector model as
+the photon-by-photon simulator. The zero-delay bin here reads 0.132
+without afterpulsing, not the site's 0.0975, because the bin and the
+jitter average over the walls of the dip.
+
 ## What is in the package
 
 Everything below except the last group is importable straight from
@@ -806,7 +898,10 @@ example) gives its inputs, units and conventions.
 - `analyze_histogram` -- g2(0) of a CW (continuous laser) histogram
   with a bootstrap interval, the fit's p-value and a check of the
   search limits (examples 1 and 9). `analyze_pulsed` -- the same for
-  a pulsed-laser histogram, from peak areas.
+  a pulsed-laser histogram, by a fit of the whole comb (default) or
+  from peak areas (example 17). `fit_pulsed` -- that comb fit, with a
+  profile-likelihood interval and a p-value; `peak_cdf` -- the share
+  of one peak below a given delay.
 - `fit_g2_histogram` -- the model fit that `analyze_histogram` runs
   once per copy; returns `(g2_0, ok)`, and with `return_details=True`
   the fitted parameters, which of them sit on a search limit, and the
@@ -865,7 +960,8 @@ example) gives its inputs, units and conventions.
   package itself does not list them. `register_platform` adds your own.
 - `expected_histogram`, `sample_histogram`, `sample_event_stream` --
   the fast simulator: the mean histogram (with exact blinking and
-  optional dead time), Poisson draws from it, and the same split into
+  optional dead time and afterpulsing), Poisson draws from it, and the
+  same split into
   time slices. `mean_detected_rate_cps`, `deadtime_throughput` -- the
   rates it uses.
 - `simulate_photon_stream`, `DetectorImpairments` -- a slower
@@ -877,9 +973,10 @@ example) gives its inputs, units and conventions.
   whose g2 is exactly a given (`tau1`, `tau2`, `a`); the
   photon-by-photon simulator uses it.
 - `expected_hist_pulsed`, `peak_shape`, `calibrate_comb`,
-  `g2_peak_area` -- the pulsed-laser simulator and the peak-area
-  analysis behind `analyze_pulsed` (default repetition period
-  12.5 ns, i.e. 80 MHz).
+  `g2_peak_area` -- the pulsed-laser simulator, the location of the
+  zero-delay peak, and the peak-area analysis of
+  `analyze_pulsed(method="area")` (default repetition period 12.5 ns,
+  i.e. 80 MHz).
 - `__version__`.
 
 **Machine-learning layer** (needs the `ml` extra; import the modules
@@ -914,8 +1011,20 @@ explicitly)
 `sparq` raises a `ValueError` instead of guessing when:
 
 - delays and counts differ in length or are not 1-D, or counts are
-  negative (`analyze_histogram`, `analyze_pulsed`); `singles_cps` is
-  not one or two positive rates;
+  negative, or either holds a NaN or infinity, or `T_s` is not a
+  positive number (`analyze_histogram`, `analyze_pulsed`);
+  `singles_cps` is not one or two positive rates;
+- `fit_g2_histogram` and `profile_likelihood_ci` get a histogram whose
+  length is not `cfg.n_bins`, counts that are negative or not finite,
+  or a `T_s` or `r_hat` that is not a positive number;
+- `fit_pulsed` gets delays that are not strictly increasing or
+  decreasing, a record shorter than three laser periods, no counts,
+  `T_s` without `singles_cps` or the reverse, or a non-positive
+  `t_rep` or `sigma_pair`; `analyze_pulsed` an unknown `method`, or
+  fit options with `method="area"`; `g2_peak_area` a period so short
+  that no delay lies 4.5 ns from every peak (use the fit);
+- `expected_histogram` gets `afterpulse_p` outside [0, 1] or a
+  non-positive `afterpulse_tau_ns`;
 - the data's bins are wider than the analysis grid's bins, which would
   leave grid bins empty or invent resolution (`rebin_real`, and so
   `analyze_histogram`; pass a coarser `cfg`); the analysis window
@@ -994,7 +1103,7 @@ explicitly)
 
 ## How the results are checked
 
-172 automated tests run on every push to `main` and every pull
+195 automated tests run on every push to `main` and every pull
 request. In CI they run on Python 3.10, 3.11, 3.12, 3.13 and 3.14 with
 CPU PyTorch; once more on Python 3.14 without PyTorch, where the
 machine-learning test files are skipped; and once more on Python 3.10
@@ -1036,6 +1145,17 @@ fixed seeds. The main checks:
 - The simulator's edge bin sits within 2 % of the accidental level and
   its central bin below 10 % of it; its Poisson draws have the right
   mean and variance; time slices add up to the same mean.
+- Afterpulsing: the closed-form afterpulse integrals match numerical
+  integration to 1e-12 (also where the shelving time equals the
+  afterpulse time, a removable singularity); the site's g2 written as
+  a sum of exponentials matches `site_g2` to 1e-12, with and without
+  blinking. The jitter, left out of the afterpulse terms, changes them
+  by less than 5e-4 of the flat level (times p) against a numerical
+  integral of the blurred g2. With 20 % afterpulsing and 45 ns dead
+  time the photon-by-photon histogram passes the chi-square test
+  against the fast simulator (p > 1e-3) and fails it without the
+  afterpulse terms (p < 1e-6), even with the flat level scaled to the
+  counted rates; those rates match r (1 + p) within 5 standard errors.
 
 **Analysis of histograms**
 
@@ -1081,8 +1201,31 @@ fixed seeds. The main checks:
   less than half as wide), and without it (wider); they separate a
   single emitter from a pair.
 - Pulsed data: `analyze_pulsed` within 0.05 of the true 0.12; the
-  peak-area method within 0.03 on noise-free data; the comb center
-  within 2 bins; the peak shape has unit area to 1e-3.
+  peak-area method within 0.03 on noise-free data with 1 ns lifetimes;
+  the comb center within 2 bins (also, from 0.11.0, in a record of
+  3.5 periods); the peak shape has unit area to 1e-3.
+- Comb fit: `peak_cdf` matches a numerical integral of `peak_shape` to
+  1e-7 and, without jitter, the two-sided exponential law to 1e-15;
+  the exact bin shares match a midpoint sum over sixteen times finer
+  bins of `expected_hist_pulsed` to 2e-5 of the largest bin (the
+  midpoint rule's own error). On such noise-free data the fit returns
+  g2(0) to 1e-4 at 80 MHz (1 and 2 ns lifetimes, with and without
+  background) and at 160 MHz, where the peak-area method gives 0.104
+  and 0 at 80 MHz and is refused at 160 MHz; with a blinking envelope
+  it returns g2(0) to 1e-3, and its interval stays open above unless
+  the singles rates are given. The interval's ends are confirmed by an
+  independent Nelder-Mead minimization of the likelihood (deviance at
+  the chi-square quantile within 0.03). The exact deviance moments
+  behind the p-value match 200 000 simulated Poisson counts and direct
+  sums to 1e-8 (their large-count expansion too, from 1000 to 1e5
+  counts per bin), and a 65 536-bin histogram with peaks of 1e5 counts
+  needs less than 100 MB for them. Done once
+  outside the test suite (simulated runs at 80 MHz, 1 ns lifetime,
+  g2(0) = 0.12): the 95 % intervals covered the truth in
+  184 of 200 runs (0.92) with about 140 counts in the zero-delay peak,
+  in 91 of 100 with a 2.5 ns lifetime and background, and in 94 of 100
+  with about 7 counts in that peak; 6 % of 500 p-values fell below
+  0.05.
 
 **Other dip shapes and the posterior of g2(0)**
 
@@ -1189,7 +1332,26 @@ figures of the manuscript, and `load_fisequr` on the real data set.
 
 ## Corrections in earlier versions
 
-**0.10.0 (this release) corrects these.**
+**0.11.0 (this release) corrects these.**
+
+- **Pulsed g2(0) too low when the peaks overlap.** The peak-area
+  analysis, the default of `analyze_pulsed` up to 0.10.0, subtracts a
+  background level taken more than 4.5 ns from every peak. With
+  lifetimes that are not short compared with the laser period, the
+  peaks' tails are still there, and the result is too low: on
+  noise-free 80 MHz data with true g2(0) = 0.12 it gave 0.104 for a
+  1 ns lifetime and 0.000 for 2 ns. The default is now a fit of the
+  whole comb, which gives 0.120 for both (example 17). At periods
+  below 9 ns the peak-area method returned NaN; it is now refused.
+  With at most four peaks in the record, the zero-delay peak was
+  always taken to be the first one; this is fixed.
+- **Inputs accepted without a clear error.** `analyze_histogram`
+  returned g2(0) = 1.0 (with `ok` False) for a negative acquisition
+  time, and failed with unrelated errors for a zero time or NaN
+  counts; `fit_g2_histogram` returned (1.0, False) for a histogram on
+  another grid. These are now refused with a message that says why.
+
+**0.10.0 corrected these.**
 
 - **The two simulators disagreed.** The photon-by-photon simulator
   turned (`tau1`, `tau2`, `a`) into rates with an approximate formula,
@@ -1307,8 +1469,20 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   thermal modes, perfectly correlated signal and idler, independent
   losses and click/no-click detectors, and no detector dead time.
 - The fast simulator's dead time changes the rates only (not the shape
-  of g2), and it has no afterpulsing; the photon-by-photon simulator
-  has both.
+  of g2); the photon-by-photon simulator changes both. Its afterpulsing
+  follows the photon-by-photon detector chain (afterpulses are not
+  themselves blocked by dead time and give no further afterpulses) and
+  leaves the jitter out of the afterpulse terms. The analysis tools
+  do not model afterpulsing: like background light, it raises the
+  measured g2(0).
+- The pulsed comb fit assumes that every peak, the zero-delay one
+  included, has the same shape (a two-sided exponential blurred by
+  Gaussian jitter) and that the background under the comb is flat;
+  its p-value shows when the peaks do not fit that shape. Its 95 %
+  intervals covered the truth in 91 % to 94 % of simulated runs, a
+  little below 95 %. With `envelope=True` and no singles rates the
+  interval often stays open above. The fit takes about a second, and
+  the interval a few seconds more.
 - PTU reading was checked against two independent readers on files
   written from PicoQuant's format description, not on files recorded
   by hardware. Other vendors' binary formats are not read; export

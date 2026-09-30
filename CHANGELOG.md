@@ -1,5 +1,115 @@
 # Changelog
 
+## 0.11.0 (2026-09-30)
+
+Pulsed histograms are now analyzed by an exact fit of the whole comb of
+peaks, the fast simulator models detector afterpulsing, and several
+inputs that gave wrong or cryptic results are refused.
+
+### Added
+
+- `fit_pulsed` (`sparq.pulsed`): Poisson maximum-likelihood fit of a
+  pulsed histogram with the model `expected_hist_pulsed` simulates
+  (center peak g2_0 A, side peaks A, optional blinking envelope, flat
+  floor), with each peak's share of each bin computed exactly
+  (`peak_cdf`, the distribution function of the jitter-blurred
+  two-sided exponential). Overlapping peaks are no problem. Returns
+  g2(0) with a profile-likelihood interval, the fitted peak shape,
+  and a goodness-of-fit p-value. Between the peaks the bins hold few
+  counts, where the usual chi-square law of the deviance does not
+  hold, and how far it is off depends on the data: for 100 simulated
+  histograms (80 MHz, 484 bins of 0.25 ns, 10 s at 200 kcps, true
+  g2(0) 0.12, 1 ns lifetime, 0.5 ns jitter, up to 109 counts per bin
+  and 90 bins with fewer than 1, NumPy seed 123) the chi-square law
+  put 21 of 100 p-values below 0.05. The p-value therefore uses the
+  exact mean and variance of each bin's Poisson deviance: 6 of the
+  same 100, and 30 of 500 runs of this kind (seeds 7 and 99), fell
+  below 0.05. The moments are summed exactly for bins with a mean of
+  up to 1000 counts, in blocks of bounded size, and above that taken
+  from the expansions 1 + 1/(6m) + 1/(6m^2) and 2 + 2/(3m) + 4/(3m^2),
+  whose coefficients were read off the exact sums and which agree
+  with them to 1e-8 from m = 1000 to 1e5 (tested). Optional:
+  `sigma_pair` and `center` when known, `envelope=True` for a
+  blinking envelope, and `T_s` with `singles_cps` to fix the
+  side-peak area from the detectors' count rates. In simulated runs
+  (done once, outside the test suite) the 95 % intervals covered the
+  truth in 91 % to 94 % of runs.
+- `analyze_pulsed(method=...)`: "fit" (new default, see Behaviour
+  changes) or "area" (the 0.10.0 method); `envelope`, `T_s`,
+  `singles_cps`, `sigma_pair` are passed to the fit.
+- `expected_histogram(afterpulse_p=, afterpulse_tau_ns=)`:
+  afterpulsing in the fast simulator, as in the photon-by-photon
+  detector chain (each counted click is followed with probability p
+  by one click dead_time + Exp(afterpulse_tau) later). The
+  afterpulse terms are closed forms (the site's g2 written as a sum of
+  exponentials, also for blinking sites). They fill the dip by about
+  2p and add shallow copies of it near +-dead time. The detectors'
+  jitter is kept in the direct term and left out of the afterpulse
+  terms (a difference below 5e-4 of the flat level, times p, in the
+  test).
+
+### Fixed
+
+- `analyze_pulsed` and `g2_peak_area` (the peak-area method)
+  subtract a "floor" measured more than 4.5 ns from every peak. When
+  the peaks' tails reach there, that floor holds peak tails and g2(0)
+  comes out too low: noise-free data at 80 MHz with true g2(0) = 0.12
+  gave 0.1035 for a 1 ns lifetime and 0.0000 for a 2 ns lifetime (a
+  "perfect" emitter). The new default fit gives 0.1200 for both.
+  `g2_peak_area` itself is unchanged except as below.
+- `g2_peak_area` at repetition periods below 9 ns (no delay 4.5 ns
+  from every peak) returned NaN with NumPy "Mean of empty slice"
+  warnings; it now raises ValueError that points to the fit.
+- `calibrate_comb` on records with at most four peaks excluded every
+  peak and returned the first one as the zero-delay peak; it now
+  leaves out only peaks cut by the record's ends.
+- `analyze_histogram`: NaN counts gave a TypeError from deep inside the
+  fit, `T_s = 0` a ZeroDivisionError, and a negative `T_s` returned
+  g2_0 = 1.0 with ok = False and no error; non-finite delays or
+  counts and a non-positive or non-finite `T_s` now raise ValueError.
+  `analyze_pulsed` returned g2_0 = NaN for NaN counts; it now raises.
+- `fit_g2_histogram` returned (1.0, False) and `profile_likelihood_ci`
+  raised a broadcasting error for a histogram whose length is not
+  `cfg.n_bins`; both now raise ValueError naming the expected length,
+  and refuse negative or non-finite counts and a non-positive or
+  non-finite `T_s` or `r_hat`. Valid inputs are passed on unchanged
+  (the histogram keeps its data type), so their fits do not change.
+
+### Behaviour changes
+
+- `analyze_pulsed` now fits the comb by default. Before/after on
+  noise-free 80 MHz data with true g2(0) = 0.12: 0.1035 -> 0.1200
+  (1 ns lifetime), 0.0000 -> 0.1200 (2 ns). On the seeded noisy data of
+  `test_pulsed_analysis_recovers_truth` (1 ns, 20 s): 0.0936 (68 %
+  bootstrap interval 0.0877 to 0.1037) -> 0.1076 (68 % profile
+  interval 0.1007 to 0.1147). With a blinking envelope (a = 0.5,
+  tau2 = 50 ns, noise-free) the area method gave 0.0776, the default
+  fit (side peaks taken as equal) 0.0943 and the fit with
+  `envelope=True` 0.1200. The fit takes about a second, and the
+  interval a few seconds more; `method="area"` gives the 0.10.0
+  numbers. For the fit, `g2_0_std` is NaN (a profile interval has no
+  standard deviation), `n_bootstrap` only switches the interval on
+  (> 0) or off, and `seed` is not used.
+- The refusals listed under Fixed replace the earlier outputs quoted
+  there.
+
+### Tests
+
+- 195 tests (172 before). New files: test_pulsed_fit (peak_cdf
+  against a numerical integral of `peak_shape` to 1e-7 and the
+  Laplace law to 1e-15; the exact bin integrals against a
+  sixteen-fold finer midpoint sum of `expected_hist_pulsed` to 2e-5 of
+  the largest bin; noise-free recovery of g2(0) to 1e-4 at 80 and
+  160 MHz, with background, and with the envelope; the profile
+  interval's ends checked by a separate Nelder-Mead minimization, to
+  0.03 in deviance; the deviance moments against 200 000 simulated
+  counts and against direct sums to 1e-8, and a 65 536-bin histogram
+  with peaks of 1e5 counts within 100 MB), test_afterpulsing (closed forms against numerical
+  integrals to 1e-12; the photon-by-photon simulator with 20 %
+  afterpulsing passes the chi-square test with the new terms, p >
+  1e-3, and fails without them, p < 1e-6, even with the level scaled
+  to the counted rates) and test_validation_011.
+
 ## 0.10.0 (2026-09-24)
 
 Works through the limits listed in 0.9.1, and corrects several results
