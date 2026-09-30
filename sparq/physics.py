@@ -299,7 +299,8 @@ def mean_detected_rate_cps(site: EmitterSite) -> float:
 
 
 def expected_histogram(site: EmitterSite, T_s: float, cfg: HBTConfig,
-                       dead_time_ns: float = 0.0):
+                       dead_time_ns: float = 0.0, afterpulse_p: float = 0.0,
+                       afterpulse_tau_ns: float = 80.0):
     """Mean coincidence counts per bin for acquisition time T_s (seconds).
 
     Blinking (new in 0.10.0, exact): the emitter light is gated by an
@@ -325,19 +326,112 @@ def expected_histogram(site: EmitterSite, T_s: float, cfg: HBTConfig,
     `deadtime_throughput`) and so the flat level. Any change it makes
     to the shape of g2 is not modelled; in the tests the result agrees
     with the photon-by-photon simulation (45 ns dead time, 300 kcps per
-    detector) within Poisson noise. Afterpulsing is not modelled here;
-    the photon-by-photon simulator has it.
+    detector) within Poisson noise.
+
+    afterpulse_p, afterpulse_tau_ns (new in 0.11.0): afterpulsing as in
+    the photon-by-photon detector chain (`DetectorImpairments`): each
+    counted click is followed, with probability p, by one extra click
+    dead_time_ns + an exponential delay of mean afterpulse_tau_ns
+    later. An afterpulse of detector A repeats A's click later, so it
+    pairs with B's clicks through the same g2, shifted by its delay:
+        C(tau) = G(tau) + p [G*f](tau) + p [G*f](-tau) + p^2 [G*l](tau),
+    with G the g2 above, [G*f](tau) = int f(s) G(tau + s) ds for the
+    afterpulse delay density f, and l the Laplace density of the
+    difference of two such delays; each detector counts r (1 + p).
+    Afterpulsing thus fills the dip (by about 2p) and adds shallow
+    copies of it near +-dead_time_ns. G is a sum of exponentials in
+    |tau|, so the integrals are closed forms (`_afterpulse_terms`);
+    the jitter blur is kept in G itself but left out of the afterpulse
+    terms, which are spread over the afterpulse delays (the tests bound
+    the difference by a brute-force integral of the blurred g2).
     """
     r_a = r_b = 0.5 * mean_detected_rate_cps(site)
     td = float(dead_time_ns)
     if td < 0 or not np.isfinite(td):
         raise ValueError("dead_time_ns must be finite and >= 0")
+    p_ap = float(afterpulse_p)
+    t_ap = float(afterpulse_tau_ns)
+    if not (np.isfinite(p_ap) and 0.0 <= p_ap <= 1.0):
+        raise ValueError("afterpulse_p must lie in [0, 1]")
+    if p_ap > 0 and not (np.isfinite(t_ap) and t_ap > 0):
+        raise ValueError("afterpulse_tau_ns must be positive")
     if td > 0:
         r_a = r_b = deadtime_throughput(site, r_a, td)
     nodes, wts = cfg.bin_nodes()
     g2 = site_g2(site, nodes, cfg.sigma_irf) @ wts
+    if p_ap > 0:
+        plus, minus, both = _afterpulse_terms(site, nodes, td, t_ap)
+        g2 = g2 + (p_ap * (plus + minus) + p_ap ** 2 * both) @ wts
     flat = r_a * r_b * (cfg.bin_width * 1e-9) * T_s
     return flat * g2
+
+
+def _g2_exponentials(site: EmitterSite):
+    """(c, T): the site's jitter-free g2(tau) - 1 as sum_k c_k
+    exp(-|tau| / T_k), including the blinking gate (see `site_g2`)."""
+    p = site.params
+    N = site.n_emitters
+    a, t1, t2 = p["a"], p["tau1"], max(p["tau2"], 1e-9)
+    dip = [(-(1.0 + a) / N, t1), (a / N, t2)]
+    if not p["blinking"]:
+        return [(p["rho"] ** 2 * c, T) for c, T in dip]
+    duty = p["t_on_ms"] / (p["t_on_ms"] + p["t_off_ms"])
+    rho_b = p["rho"] * duty / (p["rho"] * duty + 1.0 - p["rho"])
+    t_on, t_off = p["t_on_ms"] * 1e6, p["t_off_ms"] * 1e6
+    tau_c = t_on * t_off / (t_on + t_off)
+    r = t_off / t_on
+    terms = [(r, tau_c)] + dip + [(r * c, 1.0 / (1.0 / T + 1.0 / tau_c))
+                                  for c, T in dip]
+    return [(rho_b ** 2 * c, T) for c, T in terms]
+
+
+def _exp_after_delay(T, a, z):
+    """int_0^inf (1/a) e^{-y/a} e^{-|z + y|/T} dy (closed form):
+    z >= 0: e^{-z/T} T/(T + a);
+    z < 0:  T/(T - a) (e^{z/T} - e^{z/a}) + e^{z/a} T/(T + a).
+    The first term is (-z/a) (e^{z/T} - e^{z/a}) / u with
+    u = z (1/T - 1/a), the difference taken with expm1 on the side that
+    cannot overflow, so that T = a is not singular."""
+    z = np.asarray(z, dtype=float)
+    zn = np.minimum(z, 0.0)
+    u = zn * (1.0 / T - 1.0 / a)
+    small = np.abs(u) < 1e-8
+    us = np.where(small, 1.0, u)
+    diff = np.where(u >= 0.0, np.exp(zn / T) * -np.expm1(-np.abs(us)),
+                    np.exp(zn / a) * np.expm1(-np.abs(us)))
+    ratio = np.where(small, np.exp(zn / T) * (1.0 - 0.5 * u), diff / us)
+    neg = (-zn / a) * ratio + np.exp(zn / a) * T / (T + a)
+    pos = np.exp(-np.maximum(z, 0.0) / T) * T / (T + a)
+    return np.where(z >= 0.0, pos, neg)
+
+
+def _exp_laplace(T, a, x):
+    """int (1/2a) e^{-|v|/a} e^{-|x + v|/T} dv
+    = (T^2 e^{-|x|/T} - a T e^{-|x|/a}) / (T^2 - a^2), written as a
+    divided difference of t -> t e^{-|x|/t} (its derivative near T = a)."""
+    x = np.abs(np.asarray(x, dtype=float))
+    if abs(T - a) < 1e-6 * max(T, a):
+        m = 0.5 * (T + a)
+        dd = np.exp(-x / m) * (1.0 + x / m)
+    else:
+        dd = (T * np.exp(-x / T) - a * np.exp(-x / a)) / (T - a)
+    return dd * T / (T + a)
+
+
+def _afterpulse_terms(site, tau, dead_time_ns, afterpulse_tau_ns):
+    """[G*f](tau), [G*f](-tau) and [G*l](tau) of `expected_histogram`
+    (jitter-free G; f the delay density dead_time + Exp(afterpulse_tau),
+    l the density of the difference of two such delays)."""
+    tau = np.asarray(tau, dtype=float)
+    plus = np.ones(tau.shape)
+    minus = np.ones(tau.shape)
+    both = np.ones(tau.shape)
+    a = float(afterpulse_tau_ns)
+    for c, T in _g2_exponentials(site):
+        plus += c * _exp_after_delay(T, a, tau + dead_time_ns)
+        minus += c * _exp_after_delay(T, a, -tau + dead_time_ns)
+        both += c * _exp_laplace(T, a, tau)
+    return plus, minus, both
 
 
 def site_g2(site: EmitterSite, tau, sigma_irf: float = 0.0):

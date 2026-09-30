@@ -14,8 +14,9 @@ propagates shot noise through every step of the analysis rather than
 quoting the fit's linearized parameter error.
 
 CW histograms go through :func:`analyze_histogram`; pulsed (comb)
-histograms through :func:`analyze_pulsed`, which reuses the comb
-calibration and side-peak-area analysis of :mod:`sparq.pulsed`.
+histograms through :func:`analyze_pulsed`, which fits the whole comb
+(:func:`sparq.pulsed.fit_pulsed`, the default from 0.11.0) or uses the
+comb calibration and side-peak-area analysis of :mod:`sparq.pulsed`.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ import numpy as np
 from .datasets import locate_dip, rebin_real, robust_flat_rate
 from .physics import HBTConfig
 from .physics import _exp_conv_gauss
-from .pulsed import T_REP_NS, calibrate_comb, g2_peak_area
+from .pulsed import T_REP_NS, calibrate_comb, fit_pulsed, g2_peak_area
 from scipy.optimize import curve_fit, minimize
 from scipy.stats import chi2
 
@@ -55,6 +56,30 @@ def _check_time_bounds(name, b):
     if not (np.isfinite(lo) and np.isfinite(hi) and 0.0 < lo < hi):
         raise ValueError(f"{name} must satisfy 0 < low < high; got {b}")
     return lo, hi
+
+
+def _check_hist_inputs(hist, T_s, r_hat, cfg):
+    """Refusals shared by the fits (new in 0.11.0): a histogram on the
+    grid of cfg with finite, non-negative counts, and a positive finite
+    acquisition time and singles rate. Up to 0.10.0 a wrong length or a
+    non-positive time gave (1.0, False) or a broadcasting error, and NaN
+    counts a TypeError."""
+    h = np.asarray(hist)            # dtype kept: float32 re-binned data
+    if h.dtype.kind not in "fiu":   # give the same fit as in 0.10.0
+        raise ValueError("hist must hold numbers")
+    if h.ndim != 1 or h.size != cfg.n_bins:
+        raise ValueError(f"hist must have cfg.n_bins = {cfg.n_bins} bins; "
+                         f"got shape {h.shape}")
+    if not np.all(np.isfinite(h)) or np.any(h < 0):
+        raise ValueError("hist must be finite and non-negative")
+    for name, v in (("T_s", T_s), ("r_hat", r_hat)):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be a positive number") from None
+        if not (np.isfinite(v) and v > 0.0):
+            raise ValueError(f"{name} must be positive and finite; got {v}")
+    return h
 
 
 def _near(x, bound, rtol=1e-3):
@@ -227,6 +252,7 @@ def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None,
     parameter sits on a bound), bound_matters, and, when at_bound is
     not empty, g2_0_widened. None when the fit failed.
     """
+    hist = _check_hist_inputs(hist, T_s, r_hat, cfg)
     g2, ok, det = _fit_auto(hist, T_s, r_hat, cfg, starts, t1_bounds,
                             t2_bounds, c0_prior=c0_prior,
                             check_bounds=check_bounds, var=var)
@@ -418,10 +444,20 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
     if cfg is None:
         cfg = HBTConfig()
     counts = np.asarray(counts, float)
-    if counts.ndim != 1 or len(counts) != len(delay):
+    delay = np.asarray(delay, float)
+    if counts.ndim != 1 or delay.shape != counts.shape:
         raise ValueError("delay and counts must be 1-D arrays of equal length")
+    if not (np.all(np.isfinite(delay)) and np.all(np.isfinite(counts))):
+        raise ValueError("delay and counts must be finite")
     if np.any(counts < 0):
         raise ValueError("counts must be non-negative")
+    try:
+        T_ok = np.isfinite(float(T_s)) and float(T_s) > 0.0
+    except (TypeError, ValueError):
+        T_ok = False
+    if not T_ok:
+        raise ValueError(f"T_s must be a positive acquisition time in "
+                         f"seconds; got {T_s!r}")
     r_singles, c0_prior = None, None
     if singles_cps is not None:
         sc = np.atleast_1d(np.asarray(singles_cps, dtype=float))
@@ -512,25 +548,73 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
 
 def analyze_pulsed(delay, counts, t_rep: float = T_REP_NS,
                    n_bootstrap: int = 200, ci: float = 0.68,
-                   threshold: float = 0.5, seed: int = 0):
-    """Estimate g2(0) from a measured pulsed HBT histogram (peak-area method).
+                   threshold: float = 0.5, seed: int = 0,
+                   method: str = "fit", envelope: bool = False,
+                   T_s=None, singles_cps=None, sigma_pair=None):
+    """Estimate g2(0) from a measured pulsed HBT histogram (a comb of
+    peaks, one per laser period).
 
-    The comb phase and the suppressed peak are located with
-    :func:`sparq.pulsed.calibrate_comb`; g2(0) is the center-peak area over
-    the mean side-peak area; the bootstrap resamples the raw counts as in
-    :func:`analyze_histogram`.  ``t_rep`` is the laser repetition period in
-    ns (default 12.5, i.e. 80 MHz).
+    method="fit" (the default from 0.11.0): `sparq.pulsed.fit_pulsed`,
+    a Poisson maximum-likelihood fit of the whole comb in which the
+    peaks may overlap; the interval is its profile-likelihood interval
+    at level `ci` (computed when n_bootstrap > 0; `seed` is not used).
+    `envelope`, `T_s`, `singles_cps` and `sigma_pair` are passed to it.
+
+    method="area" (the only method up to 0.10.0): the comb phase and
+    the suppressed peak are located with `calibrate_comb`; g2(0) is the
+    center-peak area over the mean side-peak area, both with the floor
+    between the peaks subtracted (`g2_peak_area`); the bootstrap
+    resamples the raw counts as in `analyze_histogram`. It is biased
+    low when the peaks' tails reach the space between them: on
+    noise-free data at 80 MHz with true g2(0) = 0.12 it gives 0.104 for
+    a 1 ns lifetime and 0 for 2 ns, where the fit gives 0.120.
+
+    ``t_rep`` is the laser repetition period in ns (default 12.5, i.e.
+    80 MHz).
 
     Returns a dict with g2_0, center, period, single_emitter and, when
-    bootstrapping, g2_0_low / g2_0_high / g2_0_std /
-    single_emitter_confident.
+    n_bootstrap > 0, g2_0_low / g2_0_high / g2_0_std /
+    single_emitter_confident (the whole interval on one side of
+    threshold). For method="fit" also ok, fit (the fitted parameters),
+    fit_p_value and at_bound (see `fit_pulsed`); g2_0_std is then NaN
+    (the profile interval has no standard deviation), and g2_0_high is
+    NaN when the interval does not close (then
+    single_emitter_confident is False unless g2_0_low >= threshold).
     """
     delay = np.asarray(delay, float)
     counts = np.asarray(counts, float)
     if counts.ndim != 1 or len(counts) != len(delay):
         raise ValueError("delay and counts must be 1-D arrays of equal length")
+    if not (np.all(np.isfinite(delay)) and np.all(np.isfinite(counts))):
+        raise ValueError("delay and counts must be finite")
     if np.any(counts < 0):
         raise ValueError("counts must be non-negative")
+    if method == "fit":
+        want = bool(n_bootstrap and n_bootstrap > 0)
+        fit = fit_pulsed(delay, counts, t_rep=t_rep, sigma_pair=sigma_pair,
+                         envelope=envelope, T_s=T_s,
+                         singles_cps=singles_cps, level=ci, interval=want)
+        g2_0 = float(fit["g2_0"])
+        out = dict(g2_0=g2_0,
+                   center=float(fit["params"]["center"]) if fit["ok"]
+                   else np.nan,
+                   period=float(t_rep), single_emitter=bool(g2_0 < threshold),
+                   ok=bool(fit["ok"]), fit=fit.get("params"),
+                   fit_p_value=fit.get("p_value"),
+                   at_bound=fit.get("at_bound", []))
+        if want and fit["ok"]:
+            lo, hi = float(fit["lo"]), float(fit["hi"])
+            out.update(g2_0_low=lo, g2_0_high=hi, g2_0_std=np.nan,
+                       single_emitter_confident=bool(
+                           (np.isfinite(hi) and hi < threshold)
+                           or lo >= threshold))
+        return out
+    if method != "area":
+        raise ValueError("method must be 'fit' or 'area'")
+    if envelope or T_s is not None or singles_cps is not None \
+            or sigma_pair is not None:
+        raise ValueError("envelope, T_s, singles_cps and sigma_pair are "
+                         "options of method='fit'")
     center, phase, period = calibrate_comb(delay, counts, t_rep=t_rep)
     g2_0 = g2_peak_area(delay, counts, center, t_rep=t_rep)
     out = dict(g2_0=float(g2_0), center=float(center), period=float(period),
@@ -604,7 +688,7 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
     """
     if cfg is None:
         cfg = HBTConfig()
-    hist = np.asarray(hist, float)
+    hist = np.asarray(_check_hist_inputs(hist, T_s, r_hat, cfg), float)
     flat = (0.5 * r_hat) ** 2 * (cfg.bin_width * 1e-9) * T_s
     if flat <= 0 or hist.sum() < 5:
         raise ValueError("histogram carries too little signal to profile")

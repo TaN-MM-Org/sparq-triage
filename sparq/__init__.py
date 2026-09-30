@@ -14,7 +14,9 @@ Core, dependency-light API (NumPy/SciPy only) re-exported here:
   :mod:`sparq.lab`, :mod:`sparq.sequential`, :mod:`sparq.heralded`),
 * more dip models and goodness of fit (:mod:`sparq.models`), the
   model-based posterior of g2(0) (:mod:`sparq.posterior`) and PicoQuant
-  PTU files (:mod:`sparq.ptu`), new in 0.10.0.
+  PTU files (:mod:`sparq.ptu`), new in 0.10.0,
+* the exact comb fit of pulsed histograms (`fit_pulsed`) and
+  afterpulsing in the fast simulator, new in 0.11.0.
 
 The machine-learning components require PyTorch (install the ``ml``
 extra: ``pip install sparq-triage[ml]``) and are imported explicitly:
@@ -58,7 +60,8 @@ from .datasets import (load_hbt_csv, locate_dip, rebin_real, robust_flat_rate,
 from .bayes import G2Posterior, bayesian_g2
 from .exact import (effective_params, g2_exact, liouvillian, rates_for_params,
                     rates_from_site, steady_state)
-from .pulsed import calibrate_comb, expected_hist_pulsed, g2_peak_area, peak_shape
+from .pulsed import (calibrate_comb, expected_hist_pulsed, fit_pulsed,
+                     g2_peak_area, peak_cdf, peak_shape)
 from .heralded import (car_for_purity, heralded_from_car, heralded_g2_limit,
                        heralded_source)
 from .lab import (assured_acquisition_time, certification_probability,
@@ -72,7 +75,7 @@ from .sequential import WindowSPRT
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
@@ -89,6 +92,7 @@ __all__ = [
     "effective_params", "g2_exact", "liouvillian", "rates_from_site",
     "steady_state",
     "calibrate_comb", "expected_hist_pulsed", "g2_peak_area", "peak_shape",
+    "fit_pulsed", "peak_cdf",
     "correlate_start_stop", "load_timetags_csv", "normalize_g2",
     "save_timetags_csv",
     "site_from_numbers", "expected_posterior",
