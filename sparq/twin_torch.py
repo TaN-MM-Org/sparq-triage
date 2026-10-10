@@ -6,7 +6,7 @@ gradient) optimization of the protocol through the physics.
 Power model (standard saturation photophysics):
     detected rate   R(s)   = 2 R_1 s/(1+s)          (R_1 = rate at s = 1)
     antibunching    tau1(s)= 2 tau1_1 /(1+s)        (pump-rate shortening)
-    bunching amp    a(s)   = a_1 s                  (shelving pumping)
+    bunching amp    a(s)   = 2 a_1 s/(1+s)          (shelving saturates)
     background      B(s)   = B_1 s                  (linear in pump)
 Counts are reparameterized as mu + sqrt(mu) * eps (Gaussian approximation
 of Poisson), so gradients flow through both the mean and the noise scale.

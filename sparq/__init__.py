@@ -16,7 +16,10 @@ Core, dependency-light API (NumPy/SciPy only) re-exported here:
   model-based posterior of g2(0) (:mod:`sparq.posterior`) and PicoQuant
   PTU files (:mod:`sparq.ptu`), new in 0.10.0,
 * the exact comb fit of pulsed histograms (`fit_pulsed`) and
-  afterpulsing in the fast simulator, new in 0.11.0.
+  afterpulsing in the fast simulator, new in 0.11.0,
+* a stationarity check of a series of histograms
+  (`check_stationarity`) and the signal fraction from measured counts
+  with an interval (`signal_fraction_from_counts`), new in 0.12.0.
 
 The machine-learning components require PyTorch (install the ``ml``
 extra: ``pip install sparq-triage[ml]``) and are imported explicitly:
@@ -53,7 +56,7 @@ from .physics import (
 from .analysis import (analyze_histogram, analyze_pulsed,
                        background_corrected_g2, deadtime_corrected_rate,
                        fit_g2_histogram, profile_likelihood_ci,
-                       signal_fraction)
+                       signal_fraction, signal_fraction_from_counts)
 from .sequential import SPRTCertifier
 from .datasets import (load_hbt_csv, locate_dip, rebin_real, robust_flat_rate,
                        save_hbt_csv)
@@ -71,11 +74,11 @@ from .models import (exp_conv_gauss_complex, fit_model, g2_model,
                      goodness_of_fit)
 from .posterior import ModelPosterior, bayesian_g2_model
 from .ptu import load_ptu_timetags, read_ptu, save_ptu_t2
-from .sequential import WindowSPRT
+from .sequential import WindowSPRT, check_stationarity
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
@@ -106,5 +109,6 @@ __all__ = [
     "certification_probability", "assured_acquisition_time",
     "WindowSPRT",
     "read_ptu", "load_ptu_timetags", "save_ptu_t2",
+    "check_stationarity", "signal_fraction_from_counts",
     "__version__",
 ]

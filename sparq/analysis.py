@@ -638,12 +638,13 @@ def _poisson_nll(hist, mu):
     return float(np.sum(mu - hist * np.log(mu)))
 
 
-def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
+def profile_likelihood_ci(hist, T_s: float, r_hat: float,
+                          cfg: HBTConfig | None = None,
                           level: float = 0.95, n_grid: int = 41,
                           g2_max: float = 1.5,
                           t1_bounds=DEFAULT_T1_BOUNDS,
                           t2_bounds=DEFAULT_T2_BOUNDS,
-                          c0_prior=None):
+                          c0_prior=None) -> dict:
     """Profile-likelihood confidence interval for g2(0) (Wilks/likelihood
     ratio), from the exact Poisson likelihood of the histogram.
 
@@ -685,6 +686,18 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
     at_bound: nuisance parameters that sit on a search bound at the
     profile minimum (new in 0.10.0; a RuntimeWarning is issued when it
     is not empty).
+
+    Accuracy (corrected in 0.12.0): the profile is minimized over
+    log tau1, log tau2, a and log c0, with the objective written as
+    half the Poisson deviance; the grid locates the minimum and the
+    two crossings, and g2_hat, lo and hi are then refined between grid
+    points (to about 1e-4). Up to 0.11.0 tau2 hardly moved from its
+    start value, the deviance was measured from the smallest grid value
+    and the ends were interpolated linearly, so the ends could be far
+    from the chi-square quantile: for README example 3, [0.084, 0.126]
+    with c0_prior=(1.0, 0.01) and [0.067, 0.182] without, where the
+    true profile gives [0.078, 0.124] and [0.064, 0.295]. The tests
+    check the ends against an independent Nelder-Mead profile.
     """
     if cfg is None:
         cfg = HBTConfig()
@@ -696,20 +709,30 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
     tau = np.abs(nodes)
 
     if c0_prior is not None:
-        c0_m, c0_sd = float(c0_prior[0]), float(c0_prior[1])
-        if not (np.isfinite(c0_m) and np.isfinite(c0_sd)
-                and c0_m > 0.0 and c0_sd > 0.0):
-            raise ValueError("c0_prior must be a (mean, sd) pair with "
-                             "positive values")
+        c0_m, c0_sd = _check_c0_prior(c0_prior)
+    if not (0.0 < float(level) < 1.0):
+        raise ValueError(f"level must lie in (0, 1); got {level}")
+    if int(n_grid) < 3:
+        raise ValueError("n_grid must be at least 3")
 
     s_pair = np.sqrt(2.0) * float(cfg.sigma_irf)
+    # sum(h log h - h): subtracting it makes the objective half the
+    # Poisson deviance (of order the number of bins) instead of a number
+    # of order the total counts, so the optimizer's relative stopping
+    # rule acts on the differences that matter
+    pos = hist > 0
+    nll_offset = float(np.sum(hist[pos] * np.log(hist[pos])) - hist.sum())
 
     def nll_free(theta, g2):
-        t1, t2, a, c0 = theta
+        """theta = (log tau1, log tau2, a, log c0) (from 0.12.0; up to
+        0.11.0 the lifetimes and c0 were searched in natural units, in
+        which the optimizer moved tau2 hardly at all from its start)."""
+        t1, t2, a, c0 = np.exp(theta[0]), np.exp(theta[1]), theta[2], \
+            np.exp(theta[3])
         rho2 = 1.0 - g2                      # fixed by the profiled g2
         mu = flat * c0 * (1.0 - rho2 * (((1.0 + a) * _exp_conv_gauss(tau, t1, s_pair)
                                          - a * _exp_conv_gauss(tau, t2, s_pair)) @ wts))
-        nll = _poisson_nll(hist, mu)
+        nll = _poisson_nll(hist, mu) + nll_offset
         if c0_prior is not None:
             nll += 0.5 * ((c0 - c0_m) / c0_sd) ** 2
         return nll
@@ -735,39 +758,83 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
     c0g = max(float(np.median(hist)) / max(flat, 1e-12), 0.1)
     t1_gm = float(np.sqrt(t1_lo * t1_hi))
     t2_gm = float(np.sqrt(t2_lo * t2_hi))
-    for i, g2 in enumerate(grid):
+    log_lo = np.array([np.log(t1_lo), np.log(t2_lo), 0.0, np.log(0.01)])
+    log_hi = np.array([np.log(t1_hi), np.log(t2_hi), 3.0, np.log(10.0)])
+
+    def _to_log(x):
+        return np.array([np.log(x[0]), np.log(x[1]), x[2], np.log(x[3])])
+
+    def _from_log(y):
+        return np.array([np.exp(y[0]), np.exp(y[1]), y[2], np.exp(y[3])])
+
+    def _profile(g2, warm_x):
+        """Minimum of the NLL over the nuisance parameters at fixed g2,
+        from the warm start and the two fixed starts; returns the
+        minimum and its (tau1, tau2, a, c0)."""
         starts = [np.array([t1_st, t2_st, 0.3, c0g]),
                   np.array([t1_gm, t2_gm, 0.3, c0g])]
-        if warm is not None:
-            starts.insert(0, warm)
+        if warm_x is not None:
+            starts.insert(0, warm_x)
         best = None
         for x0 in starts:
-            x0 = np.clip(x0, lo_b, hi_b)
-            res = minimize(nll_free, x0, args=(g2,), method="L-BFGS-B",
-                           bounds=list(zip(lo_b, hi_b)))
+            y0 = np.clip(_to_log(np.clip(x0, lo_b, hi_b)), log_lo, log_hi)
+            res = minimize(nll_free, y0, args=(g2,), method="L-BFGS-B",
+                           bounds=list(zip(log_lo, log_hi)))
             if best is None or res.fun < best.fun:
                 best = res
-        prof[i] = best.fun
-        xs[i] = best.x
-        warm = best.x
+        return float(best.fun), _from_log(best.x)
+
+    for i, g2 in enumerate(grid):
+        prof[i], xs[i] = _profile(g2, warm)
+        warm = xs[i]
     i0 = int(np.argmin(prof))
-    dev = 2.0 * (prof - prof[i0])
     crit = float(chi2.ppf(level, 1))
-    inside = dev <= crit
+    # From 0.12.0 the minimum and the two ends are refined between the
+    # grid points. Up to 0.11.0 the deviance was taken relative to the
+    # smallest GRID value (grid step 0.025 by default), the ends were
+    # interpolated linearly between grid points, and g2_hat was a grid
+    # point.
+    from scipy.optimize import brentq, minimize_scalar
+    pts = {float(g): (prof[i], xs[i]) for i, g in enumerate(grid)}
+
+    def _p_min(g):
+        near = min(pts, key=lambda q: abs(q - g))
+        v, x = _profile(g, pts[near][1])
+        pts[float(g)] = (v, x)
+        return v
+
+    minimize_scalar(_p_min, bounds=(float(grid[max(i0 - 1, 0)]),
+                                    float(grid[min(i0 + 1, grid.size - 1)])),
+                    method="bounded", options=dict(xatol=1e-4))
+    gs = np.array(sorted(pts))
+    pv = np.array([pts[g][0] for g in gs])
+    j0 = int(np.argmin(pv))
+    p_min = float(pv[j0])
+    g_hat = float(gs[j0])
+    x_hat = pts[g_hat][1]
+    dev = 2.0 * (prof - p_min)
 
     def _edge(lo_side: bool):
-        idx = range(i0, -1, -1) if lo_side else range(i0, len(grid))
-        prev = i0
+        dv = 2.0 * (pv - p_min)
+        idx = range(j0, -1, -1) if lo_side else range(j0, gs.size)
+        prev = j0
         for j in idx:
-            if not inside[j]:
-                # linear interpolation between prev (inside) and j (outside)
-                x0, x1 = grid[prev], grid[j]
-                y0, y1 = dev[prev], dev[j]
-                return float(x0 + (crit - y0) * (x1 - x0) / max(y1 - y0, 1e-12))
+            if dv[j] > crit:
+                # the crossing lies between gs[prev] (inside) and gs[j]
+                warm_x = pts[float(gs[prev])][1]
+
+                def excess(g):
+                    g = float(g)
+                    v = pts[g][0] if g in pts else _profile(g, warm_x)[0]
+                    return 2.0 * (v - p_min) - crit
+
+                a_e, b_e = float(gs[prev]), float(gs[j])
+                return float(brentq(excess, min(a_e, b_e), max(a_e, b_e),
+                                    xtol=1e-4))
             prev = j
         return float("nan")                # unbounded within the grid
 
-    x0 = xs[i0]
+    x0 = x_hat
     at_bound = _railed(dict(tau1=x0[0], tau2=x0[1], a=x0[2], c0=x0[3]),
                        (t1_lo, t1_hi), (t2_lo, t2_hi))
     if at_bound:
@@ -777,7 +844,7 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
             "on where the range ends: widen t1_bounds / t2_bounds, pass "
             "'auto', or pin the flat level with c0_prior",
             RuntimeWarning, stacklevel=2)
-    return dict(g2_hat=float(grid[i0]), lo=_edge(True), hi=_edge(False),
+    return dict(g2_hat=g_hat, lo=_edge(True), hi=_edge(False),
                 level=float(level), grid=grid, deviance=dev,
                 at_bound=at_bound, t1_bounds=(t1_lo, t1_hi),
                 t2_bounds=(t2_lo, t2_hi))
@@ -787,18 +854,83 @@ def profile_likelihood_ci(hist, T_s, r_hat, cfg: HBTConfig | None = None,
 # Exact closed-form corrections (v0.4)
 # ----------------------------------------------------------------------
 
-def signal_fraction(signal_rate, background_rate):
+def signal_fraction(signal_rate: float, background_rate: float) -> float:
     """rho = S / (S + B): the signal fraction entering the background
-    correction. Rates in any common unit; both must be non-negative and
-    their sum positive."""
+    correction. Rates in any common unit; both must be finite and
+    non-negative and their sum positive. For rho with an interval from
+    measured counts, see `signal_fraction_from_counts`."""
     S = float(signal_rate)
     B = float(background_rate)
+    if not (np.isfinite(S) and np.isfinite(B)):
+        raise ValueError("rates must be finite")
     if S < 0.0 or B < 0.0 or S + B <= 0.0:
         raise ValueError("rates must be non-negative with S + B > 0")
     return S / (S + B)
 
 
-def background_corrected_g2(g2_meas, rho, ci=None):
+def signal_fraction_from_counts(n_on: float, t_on: float, n_off: float,
+                                t_off: float, level: float = 0.95) -> dict:
+    """The signal fraction rho = S/(S+B) from measured counts, with an
+    exact confidence interval (new in 0.12.0).
+
+    n_on clicks in t_on seconds on the emitter (signal plus
+    background), n_off clicks in t_off seconds on a nearby spot with no
+    emitter (background only), counted on the same detectors. Then
+    rho = 1 - q with q = B/(S+B), estimated as (n_off/t_off) /
+    (n_on/t_on). This assumes the background at the emitter equals the
+    one beside it, and count rates low enough that dead time does not
+    matter (or rates corrected with `deadtime_corrected_rate`).
+
+    Interval: given n = n_on + n_off, n_off is binomial with success
+    probability pi = q t_off / (q t_off + t_on), whatever the rates.
+    The Clopper-Pearson interval for pi (Clopper and Pearson,
+    Biometrika 26, 404 (1934)) covers it with probability at least
+    `level`, and q, hence rho, is a monotone function of pi, so the
+    rho interval keeps that guarantee. It is conservative (the tests
+    measure a coverage at or above `level` by simulation).
+
+    Refuses negative or non-integer counts, non-positive times, no
+    counts on the emitter, and a background rate not below the rate on
+    the emitter (rho would not be positive).
+
+    Returns dict(rho, lo, hi, level).
+    """
+    from scipy.stats import beta as beta_dist
+    counts = []
+    for name, v in (("n_on", n_on), ("n_off", n_off)):
+        v = float(v)
+        if not (np.isfinite(v) and v >= 0 and v == np.floor(v)):
+            raise ValueError(f"{name} must be a whole, non-negative count")
+        counts.append(v)
+    n1, n2 = counts
+    for name, v in (("t_on", t_on), ("t_off", t_off)):
+        if not (np.isfinite(float(v)) and float(v) > 0):
+            raise ValueError(f"{name} must be a positive time (s)")
+    t1, t2 = float(t_on), float(t_off)
+    if not (0.0 < level < 1.0):
+        raise ValueError("level must lie in (0, 1)")
+    if n1 <= 0:
+        raise ValueError("n_on must be positive: no counts on the emitter")
+    q_hat = (n2 / t2) / (n1 / t1)
+    if q_hat >= 1.0:
+        raise ValueError(
+            f"the background rate {n2 / t2:.4g} /s is not below the rate "
+            f"on the emitter {n1 / t1:.4g} /s, so the signal fraction is "
+            "not positive")
+    n = n1 + n2
+    a = 0.5 * (1.0 - level)
+    p_lo = 0.0 if n2 == 0 else float(beta_dist.ppf(a, n2, n - n2 + 1))
+    p_hi = 1.0 if n2 == n else float(beta_dist.ppf(1.0 - a, n2 + 1, n - n2))
+
+    def q_of(p):
+        return p * t1 / ((1.0 - p) * t2) if p < 1.0 else np.inf
+
+    return dict(rho=1.0 - q_hat, lo=1.0 - q_of(p_hi),
+                hi=1.0 - q_of(p_lo), level=float(level))
+
+
+def background_corrected_g2(g2_meas: float, rho: float, ci=None,
+                            rho_ci=None) -> dict:
     """Exact background correction of a measured g2(0).
 
     A Poissonian background at signal fraction rho = S/(S+B) maps the
@@ -819,6 +951,17 @@ def background_corrected_g2(g2_meas, rho, ci=None):
     interval transforms endpoint-by-endpoint: pass ``ci=(lo, hi)`` to
     get the corrected interval.
 
+    rho_ci (new in 0.12.0): an interval (lo, hi) for rho itself, for
+    example from `signal_fraction_from_counts`. The corrected interval
+    is then the smallest and largest corrected value over all pairs
+    (g2 in ci, rho in rho_ci): the map rises with g2 and, for g2 below
+    1, with rho, so these sit at corners of that box. If ci covers the
+    measured g2 with probability 1 - a and rho_ci covers rho with
+    probability 1 - b, the result covers the true g2 with probability
+    at least 1 - a - b (Bonferroni): for a 95 % result use two 97.5 %
+    intervals. Without ci, rho_ci alone gives the range from rho. The
+    point value still uses `rho`, which must lie in rho_ci.
+
     rho must lie in (0, 1]; a corrected value below 0 is truncated to
     0 (a measured histogram can fluctuate below the physical floor)
     and the untruncated value is returned alongside.
@@ -828,19 +971,45 @@ def background_corrected_g2(g2_meas, rho, ci=None):
     rho = float(rho)
     if not (0.0 < rho <= 1.0):
         raise ValueError("rho must lie in (0, 1]")
-    raw = 1.0 + (float(g2_meas) - 1.0) / rho ** 2
+    g = float(g2_meas)
+    if not np.isfinite(g):
+        raise ValueError("g2_meas must be finite")
+
+    def corr(gm, r):
+        return 1.0 + (gm - 1.0) / r ** 2
+
+    raw = corr(g, rho)
     out = dict(g2_corrected=max(raw, 0.0),
                g2_uncorrected_inverse=raw, ci=None)
+    lo = hi = g
     if ci is not None:
         lo, hi = (float(ci[0]), float(ci[1]))
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            raise ValueError("ci must be finite")
         if lo > hi:
             raise ValueError("ci must be (lo, hi) with lo <= hi")
-        out["ci"] = (max(1.0 + (lo - 1.0) / rho ** 2, 0.0),
-                     max(1.0 + (hi - 1.0) / rho ** 2, 0.0))
+    if rho_ci is None:
+        if ci is not None:
+            out["ci"] = (max(corr(lo, rho), 0.0), max(corr(hi, rho), 0.0))
+        return out
+    r_lo, r_hi = (float(rho_ci[0]), float(rho_ci[1]))
+    if np.isfinite(r_lo) and r_lo <= 0.0:
+        raise ValueError(
+            "rho_ci reaches down to 0: the background is not measured "
+            "well enough to bound the correction (count longer on and "
+            "beside the emitter)")
+    if not (0.0 < r_lo <= rho <= r_hi <= 1.0):
+        raise ValueError("rho_ci must be (lo, hi) with 0 < lo <= rho <= "
+                         "hi <= 1")
+    # corners: the smallest value at the lowest g2 with the rho that
+    # pulls it down most, the largest at the highest g2 likewise
+    low = corr(lo, r_lo) if lo < 1.0 else corr(lo, r_hi)
+    high = corr(hi, r_hi) if hi < 1.0 else corr(hi, r_lo)
+    out["ci"] = (max(low, 0.0), max(high, 0.0))
     return out
 
 
-def deadtime_corrected_rate(r_meas_cps, dead_time_ns):
+def deadtime_corrected_rate(r_meas_cps: float, dead_time_ns: float) -> float:
     """Exact non-paralyzable dead-time correction of a count rate.
 
     A detector that goes blind for tau_d after each accepted count maps
@@ -859,6 +1028,8 @@ def deadtime_corrected_rate(r_meas_cps, dead_time_ns):
     """
     r = float(r_meas_cps)
     td = float(dead_time_ns) * 1e-9
+    if not (np.isfinite(r) and np.isfinite(td)):
+        raise ValueError("rate and dead time must be finite")
     if r < 0.0 or td < 0.0:
         raise ValueError("rate and dead time must be non-negative")
     x = r * td

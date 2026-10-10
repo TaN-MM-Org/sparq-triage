@@ -216,9 +216,10 @@ def _poisson_deviance(h, mu):
     return float(2.0 * np.sum(t - (h - mu)))
 
 
-def fit_model(hist, T_s, r_hat, cfg: HBTConfig | None = None,
-              model="three_level", starts=None, fixed=None,
-              c0_prior=None, n_shoulders=1):
+def fit_model(hist, T_s: float, r_hat: float,
+              cfg: HBTConfig | None = None, model: str = "three_level",
+              starts=None, fixed=None, c0_prior=None,
+              n_shoulders: int = 1) -> dict:
     """Fit a dip model to a histogram on the grid `cfg` by the exact
     Poisson likelihood.
 
@@ -239,7 +240,12 @@ def fit_model(hist, T_s, r_hat, cfg: HBTConfig | None = None,
         scale c0, as in `profile_likelihood_ci`.
 
     All free model parameters are positive and fitted on a log scale;
-    rho2 lies in [0, 1] and c0 in [1e-3, 1e3].
+    rho2 lies in [0, 1] and c0 in [1e-3, 1e3]. The fit is a local
+    search (L-BFGS-B from the starts) and can stop short of the best
+    fit when the model fits badly, in a way that depends on the SciPy
+    version: for the three-level fit of README example 10 the deviance
+    is 350.16 with SciPy 1.18 and 345.75 with SciPy 1.10 (p-values
+    8.3e-11 and 2.2e-10; both reject the model).
 
     Returns a dict: model, params (the model's), rho2, c0, g2_0
     (= 1 - rho2), mu (the fitted mean counts), deviance (Poisson),
@@ -256,8 +262,8 @@ def fit_model(hist, T_s, r_hat, cfg: HBTConfig | None = None,
     if np.any(h < 0) or not np.all(np.isfinite(h)):
         raise ValueError("hist must be finite and non-negative")
     flat = (0.5 * float(r_hat)) ** 2 * (cfg.bin_width * 1e-9) * float(T_s)
-    if not flat > 0:
-        raise ValueError("r_hat and T_s must be positive")
+    if not (float(r_hat) > 0 and float(T_s) > 0 and np.isfinite(flat)):
+        raise ValueError("r_hat and T_s must be positive and finite")
     if model not in MODELS:
         raise ValueError(f"unknown model {model!r}")
     fixed = dict(fixed or {})
@@ -301,9 +307,14 @@ def fit_model(hist, T_s, r_hat, cfg: HBTConfig | None = None,
         return np.real(acc) @ wts           # g2_1 - 1, bin-averaged
 
     if c0_prior is not None:
-        c0_m, c0_sd = float(c0_prior[0]), float(c0_prior[1])
-        if not (c0_m > 0 and c0_sd > 0):
-            raise ValueError("c0_prior must be (mean, sd), both positive")
+        try:
+            c0_m, c0_sd = float(c0_prior[0]), float(c0_prior[1])
+        except (TypeError, IndexError, ValueError):
+            raise ValueError("c0_prior must be a (mean, sd) pair") from None
+        if not (c0_m > 0 and c0_sd > 0 and np.isfinite(c0_m)
+                and np.isfinite(c0_sd)):
+            raise ValueError("c0_prior must be (mean, sd), both positive "
+                             "and finite")
 
     def nll(x):
         rho2, lc0 = x[0], x[1]

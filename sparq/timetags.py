@@ -30,9 +30,10 @@ A. Beveratos, J.-P. Poizat and P. Grangier, Opt. Lett. 25, 1294
 ch. 6.) The per-bin one-sigma error bars are Poisson,
 sqrt(C)/(N1 N2 w / T), stated as such.
 
-No proprietary binary formats are parsed here (a PTU reader written
-without the vendor spec would be a guess); the CSV contract is exact
-and round-trips bit-for-bit through `save_timetags_csv` /
+No binary formats are parsed in this module: PicoQuant PTU files are
+read by :mod:`sparq.ptu` (from 0.10.0), written to PicoQuant's
+published format description. The CSV contract here is exact and
+round-trips bit-for-bit through `save_timetags_csv` /
 `load_timetags_csv`, and any two-column (channel, time) export from
 vendor software fits it.
 """
