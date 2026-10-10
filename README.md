@@ -27,8 +27,11 @@ time stamps, or a PicoQuant PTU file) and answers:
   reliable?
 - Can I stop measuring early because the data already suffice, with
   error rates that hold without knowing the emitter?
+- Did the source stay the same during the run, so that the snapshots
+  may be added up?
 - How much do background light, blinking, detector dead time and
-  afterpulsing change the numbers?
+  afterpulsing change the numbers, and how sure is the background
+  correction when the background itself is measured?
 - For a pulsed laser, what is g2(0) when the peaks of the comb
   overlap?
 - For a heralded pair source, what purity does a measured
@@ -36,9 +39,10 @@ time stamps, or a PicoQuant PTU file) and answers:
 
 The analysis core needs only NumPy and SciPy. An optional
 machine-learning layer (PyTorch) holds the neural estimators and the
-automated triage agent of the manuscript *"Closed-loop, event-driven
-machine learning for autonomous triage of single-photon emitters"*;
-the
+automated triage agent of the paper *"Closed-loop, event-driven
+machine learning for autonomous triage of single-photon emitters"*
+(T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M. Mohsin), accepted
+in *ACS Photonics* and now in production (no DOI yet); the
 [companion repository](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters)
 reproduces the paper itself.
 
@@ -161,9 +165,14 @@ Units:
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with sparq-triage 0.11.0. All emitter numbers are illustrative
-values, not measurements. The data are simulated with a fixed random
-seed, so you get the same output.
+printed with sparq-triage 0.12.0 (Python 3.13, NumPy 2.5.3, SciPy
+1.18.1). All emitter numbers are illustrative values, not
+measurements. The data are simulated with a fixed random seed, so you
+get the same output. With other NumPy or SciPy versions some printed
+numbers can differ a little: in example 11, whose sampler follows the
+fit it starts from, and in the p-value of the rejected fit of example
+10 (2.2e-10 with SciPy 1.10), whose optimizer stops at a slightly
+different point.
 
 ### 1. Analyze a measured histogram
 
@@ -277,6 +286,7 @@ g2(0) itself.
 ### 3. A model-based interval, and why the singles rate helps
 
 ```python
+import warnings
 import numpy as np
 from sparq import EmitterSite, HBTConfig, expected_histogram, profile_likelihood_ci
 
@@ -286,17 +296,25 @@ cfg = HBTConfig()
 hist = np.random.default_rng(0).poisson(
     expected_histogram(site, 60.0, cfg)).astype(float)
 
-free = profile_likelihood_ci(hist, 60.0, 150e3, cfg)
-pinned = profile_likelihood_ci(hist, 60.0, 150e3, cfg, c0_prior=(1.0, 0.01))
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", RuntimeWarning)   # see the text below
+    free = profile_likelihood_ci(hist, 60.0, 150e3, cfg)
+    pinned = profile_likelihood_ci(hist, 60.0, 150e3, cfg, c0_prior=(1.0, 0.01))
+    wider = profile_likelihood_ci(hist, 60.0, 150e3, cfg, c0_prior=(1.0, 0.01),
+                                  t2_bounds=(50.0, 8000.0))
 print(f"true g2(0): {site.g2_0:.4f}")
 print(f"flat level free:        [{free['lo']:.3f}, {free['hi']:.3f}]")
 print(f"flat level pinned (1%): [{pinned['lo']:.3f}, {pinned['hi']:.3f}]")
+print(f"on a search limit: free {free['at_bound']}, pinned {pinned['at_bound']}")
+print(f"pinned, tau2 up to 8000 ns: [{wider['lo']:.3f}, {wider['hi']:.3f}]")
 ```
 
 ```
 true g2(0): 0.0975
-flat level free:        [0.067, 0.182]
-flat level pinned (1%): [0.084, 0.126]
+flat level free:        [0.064, 0.295]
+flat level pinned (1%): [0.078, 0.124]
+on a search limit: free [], pinned ['tau2_high']
+pinned, tau2 up to 8000 ns: [0.077, 0.123]
 ```
 
 `profile_likelihood_ci` gives a 95 % interval for g2(0) itself, using
@@ -304,7 +322,14 @@ the full emitter model and the exact Poisson likelihood. With the
 flat level left free, the interval is wide for the reason given under
 example 1. Pass the singles rate as `r_hat` (here 150e3 counts per
 second, both detectors) and its relative uncertainty as
-`c0_prior=(1.0, sd)`, and the interval narrows.
+`c0_prior=(1.0, sd)`, and the interval narrows. With the flat level
+pinned, the best fit puts the shelving time at the upper end of its
+search range (800 ns), and the function warns about it (silenced here).
+Searching up to 8000 ns moves the interval by 0.001, so here the limit
+does not matter; when the interval does move, report the wider one.
+Version 0.12.0 corrects this function: up to 0.11.0 it printed
+[0.067, 0.182] and [0.084, 0.126] for these data (see
+[Corrections](#corrections-in-earlier-versions)).
 
 ### 4. Plan the measurement before running it
 
@@ -421,7 +446,9 @@ below 0 is reported as 0, and the uncorrected result is kept in
 after each click; a measured rate at or above `1/tau_d` has no
 solution and is refused. That formula is exact for unrelated
 (Poisson) clicks; for antibunched or bunched light the loss is
-slightly different (`deadtime_throughput`, example 16).
+slightly different (`deadtime_throughput`, example 16). Example 20
+shows how to measure rho with an interval and carry it into the
+corrected value.
 
 ### 7. From raw time tags to g2
 
@@ -609,8 +636,8 @@ print(f"P[g2(0) < 0.5] = {post.prob_below(0.5):.3f}; "
 ```
 
 ```
-true g2(0) 0.0975; posterior median 0.100, 95 % interval [0.067, 0.136]
-P[g2(0) < 0.5] = 1.000; R-hat 1.023, effective samples 758
+true g2(0) 0.0975; posterior median 0.101, 95 % interval [0.069, 0.135]
+P[g2(0) < 0.5] = 1.000; R-hat 1.017, effective samples 707
 ```
 
 `bayesian_g2_model` gives the posterior of the model's g2(0) (without
@@ -887,6 +914,104 @@ the photon-by-photon simulator. The zero-delay bin here reads 0.132
 without afterpulsing, not the site's 0.0975, because the bin and the
 jitter average over the walls of the dip.
 
+### 19. Did the source change during the run?
+
+```python
+import numpy as np
+from sparq import EmitterSite, HBTConfig, expected_histogram, check_stationarity
+
+params = dict(tau1=15.0, tau2=250.0, a=0.3, rate_kcps=150.0, rho=0.95,
+              blinking=False)                       # illustrative values
+one = EmitterSite(dict(params), n_emitters=1)
+two = EmitterSite(dict(params), n_emitters=2)       # same brightness, two emitters
+cfg = HBTConfig()
+t = np.full(8, 20.0)                                # eight snapshots of 20 s
+rng = np.random.default_rng(4)
+steady = rng.poisson(np.outer(t, expected_histogram(one, 1.0, cfg)))
+r = check_stationarity(steady, t, cfg)
+print(f"steady:  p-values rate {r['rate_p']:.2f}, window {r['window_p']:.2f}, "
+      f"shape {r['shape_p']:.2f}; consistent: {r['consistent']}")
+
+# the same site, but a second emitter takes part from the fifth snapshot on
+late = rng.poisson(np.outer(t[4:], expected_histogram(two, 1.0, cfg)))
+r = check_stationarity(np.vstack([steady[:4], late]), t, cfg)
+print(f"changed: p-values rate {r['rate_p']:.2f}, window {r['window_p']:.1e}, "
+      f"shape {r['shape_p']:.1e}; consistent: {r['consistent']}")
+print("window g2 of each snapshot:", " ".join(f"{g:.2f}" for g in r["g2_window"]))
+```
+
+```
+steady:  p-values rate 0.31, window 0.92, shape 0.25; consistent: True
+changed: p-values rate 0.03, window 9.7e-31, shape 4.5e-82; consistent: False
+window g2 of each snapshot: 0.08 0.09 0.11 0.12 0.57 0.58 0.55 0.46
+```
+
+Every analysis here assumes that the source stays the same while it is
+measured. Bleaching, slow blinking, a drifting focus or a second
+emitter that starts to take part break that, and the sum of such
+snapshots describes no single state of the site. `check_stationarity`
+tests a series of snapshots (each on the grid `cfg`, centered on the
+dip) before you add them up. It makes three chi-square tests that need
+no emitter model: are the total counts in proportion to the snapshot
+times (**rate**), is the window g2 of example 2 the same in every
+snapshot (**window**), and is the whole histogram the same up to a
+scale (**shape**, with neighboring bins merged until every expected
+count is at least 5)? `consistent` is False when any p-value falls
+below 0.01/3, so a steady source is flagged in at most about 1 % of
+runs. In the second series the window g2 jumps from about 0.1 to
+about 0.55 after four snapshots, and both the window and the shape
+tests see it. A test whose expected counts are too small for the
+chi-square law is refused (merge snapshots or measure longer). Like
+`bayesian_g2`, it needs Poisson counts: native bins, or bins merged
+whole.
+
+### 20. Background correction with a measured background
+
+```python
+from sparq import background_corrected_g2, signal_fraction_from_counts
+
+# Illustrative counter readings (both detectors together): 10 s on the
+# emitter, then 0.1 s on an empty spot beside it for the background.
+rho = signal_fraction_from_counts(n_on=1_200_000, t_on=10.0,
+                                  n_off=900, t_off=0.1, level=0.975)
+print(f"signal fraction {rho['rho']:.4f}, 97.5 % interval "
+      f"[{rho['lo']:.4f}, {rho['hi']:.4f}]")
+
+# a measured g2(0) with its 97.5 % interval (illustrative)
+g2, ci = 0.21, (0.18, 0.24)
+exact = background_corrected_g2(g2, rho["rho"], ci=ci)
+both = background_corrected_g2(g2, rho["rho"], ci=ci,
+                               rho_ci=(rho["lo"], rho["hi"]))
+print(f"corrected g2(0) {both['g2_corrected']:.3f}")
+print(f"interval, rho taken as exact:   [{exact['ci'][0]:.3f}, {exact['ci'][1]:.3f}]")
+print(f"interval, rho uncertainty too:  [{both['ci'][0]:.3f}, {both['ci'][1]:.3f}]")
+```
+
+```
+signal fraction 0.9250, 97.5 % interval [0.9192, 0.9305]
+corrected g2(0) 0.077
+interval, rho taken as exact:   [0.042, 0.112]
+interval, rho uncertainty too:  [0.029, 0.122]
+```
+
+The signal fraction of example 6 usually comes from two counter
+readings: on the emitter (signal plus background) and on an empty spot
+beside it (background only). `signal_fraction_from_counts` turns them
+into rho with an exact interval: given the total of the two counts,
+the background count is binomial, and the Clopper-Pearson interval
+(Clopper and Pearson, Biometrika 26, 404 (1934)) for that binomial
+gives an interval for rho that covers it at least as often as the
+level says. `background_corrected_g2(..., rho_ci=...)` then carries
+both uncertainties into the corrected value: it returns the smallest
+and largest corrected g2 over every pair of values in the two
+intervals. When each interval has level 97.5 %, the result covers the
+true g2(0) in at least 95 % of runs (the chance that either interval
+misses is at most 2.5 % + 2.5 %). Here the short background reading
+widens the corrected interval from 0.070 to 0.093. This assumes that
+the background beside the emitter equals the background on it, and
+count rates low enough that dead time does not matter (or rates
+corrected with `deadtime_corrected_rate` first).
+
 ## What is in the package
 
 Everything below except the last group is importable straight from
@@ -930,6 +1055,11 @@ example) gives its inputs, units and conventions.
   clearly (`analyze_histogram` warns when it does not).
 - `background_corrected_g2`, `signal_fraction`,
   `deadtime_corrected_rate` -- closed-form corrections (example 6).
+  `signal_fraction_from_counts` gives rho from counter readings on
+  and beside the emitter, with an exact interval, for
+  `background_corrected_g2(rho_ci=...)` (example 20).
+- `check_stationarity`: whether a series of snapshots comes from a
+  source that did not change (example 19).
 - `load_timetags_csv`, `save_timetags_csv`, `correlate`,
   `correlate_start_stop`, `normalize_g2` -- time tags to g2
   (example 7). `read_ptu`, `load_ptu_timetags`, `save_ptu_t2` --
@@ -1035,20 +1165,27 @@ explicitly)
 - a `t1_bounds` / `t2_bounds` range is not `(low, high)` with
   0 < low < high, or a string other than `"auto"`;
 - a histogram has too few counts to profile, or `c0_prior` is not a
-  pair of positive numbers (`profile_likelihood_ci`, and the same
-  checks in `fit_g2_histogram`, `fit_model` and `bayesian_g2_model`);
+  pair of positive, finite numbers (`profile_likelihood_ci`, and the
+  same checks in `fit_g2_histogram`, `fit_model` and
+  `bayesian_g2_model`); `profile_likelihood_ci` also refuses a `level`
+  outside (0, 1) and fewer than 3 grid points;
+- `check_stationarity` gets fewer than two snapshots, snapshots not on
+  the grid `cfg`, negative or non-finite counts, durations that are
+  not positive, or so few counts that a test would have an expected
+  count below `min_expected` (default 5);
 - `bayesian_g2` gets a histogram of the wrong length, negative or
   non-finite counts, a grid with no bin centered on zero, an even or
   too-wide central window, an empty reference window, windows that
   overlap, or a prior with shape <= 0 or rate < 0; `G2Posterior.mean`
   when the mean does not exist (almost no far counts), and quantile or
   interval levels outside (0, 1);
-- `fit_model` gets an unknown model or a fixed parameter the model
-  does not have; `bayesian_g2_model` a histogram of the wrong length,
+- `fit_model` gets an unknown model, a fixed parameter the model
+  does not have, or a `T_s` or `r_hat` that is not positive and
+  finite; `bayesian_g2_model` a histogram of the wrong length,
   no counts, or `a_max` <= 0;
 - `SPRTCertifier` gets error rates outside (0, 1), a hypothesis with
-  zero expected counts in some bin, data on a different grid, or a
-  non-positive time step; `WindowSPRT` error rates outside (0, 1),
+  zero expected counts in some bin, data on a different grid, negative
+  or non-finite counts, or a time step that is not a positive number; `WindowSPRT` error rates outside (0, 1),
   `g_accept` not below `g_reject`, a grid with no bin centered on zero,
   windows that are empty or overlap, or negative or non-finite counts;
 - `site_from_numbers` gets non-positive or non-finite times or rate,
@@ -1060,11 +1197,16 @@ explicitly)
   whose window g2 is not below the threshold (no run can certify it;
   example 4), or a target not reached within `t_max_s` (the message
   gives the probability reached);
-- `background_corrected_g2` gets `rho` outside (0, 1] or an interval
-  with low > high; `signal_fraction` negative rates or a zero total;
-  `deadtime_corrected_rate` negative inputs or a measured rate at or
-  above `1/tau_d` (example 6); `expected_histogram` a negative dead
-  time;
+- `background_corrected_g2` gets `rho` outside (0, 1], a `g2_meas`
+  or interval that is not finite, an interval with low > high, or a
+  `rho_ci` that reaches 0 or does not contain `rho`;
+  `signal_fraction` negative or non-finite rates or a zero total;
+  `signal_fraction_from_counts` counts that are negative or not whole,
+  times that are not positive, no counts on the emitter, or a
+  background rate not below the rate on the emitter;
+  `deadtime_corrected_rate` negative or non-finite inputs or a
+  measured rate at or above `1/tau_d` (example 6);
+  `expected_histogram` a negative dead time;
 - `rates_for_params` gets `tau2` not above `tau1` (with `a` > 0), a
   negative `a`, or a pump fraction for which no rates exist (the
   message names the smallest that works); `simulate_photon_stream`
@@ -1103,7 +1245,7 @@ explicitly)
 
 ## How the results are checked
 
-195 automated tests run on every push to `main` and every pull
+208 automated tests run on every push to `main` and every pull
 request. In CI they run on Python 3.10, 3.11, 3.12, 3.13 and 3.14 with
 CPU PyTorch; once more on Python 3.14 without PyTorch, where the
 machine-learning test files are skipped; and once more on Python 3.10
@@ -1199,7 +1341,12 @@ fixed seeds. The main checks:
 - Profile-likelihood intervals contain the truth where the instrument
   response matters, at 10 s and 60 s with `c0_prior` (the 60 s one
   less than half as wide), and without it (wider); they separate a
-  single emitter from a pair.
+  single emitter from a pair. From 0.12.0, on the data of example 3,
+  an independent Nelder-Mead profile (the model built from
+  `g2_measured`) puts the deviance at both ends at the chi-square
+  quantile 3.84 within 0.03 and its minimum within 2e-4 of `g2_hat`,
+  with and without `c0_prior`; the 0.11.0 ends sat at 2.15 and 4.45
+  (pinned) and at 2.63 and 1.16 (free).
 - Pulsed data: `analyze_pulsed` within 0.05 of the true 0.12; the
   peak-area method within 0.03 on noise-free data with 1 ns lifetimes;
   the comb center within 2 bins (also, from 0.11.0, in a record of
@@ -1272,12 +1419,32 @@ fixed seeds. The main checks:
   between increments, the wrong decisions stay within Wald's bounds
   (plus three standard errors), and every run decides.
 
+**Stationarity of a series of snapshots**
+
+- `check_stationarity`: its three statistics equal those of SciPy's
+  `chisquare` and `chi2_contingency` (also after bins are merged,
+  where every expected count is at least 5); over 200 simulated steady
+  series of six snapshots its p-values are uniform (Kolmogorov-Smirnov
+  p > 0.01, at most 9 % below 0.05) and at least 194 are called
+  consistent; a second emitter from the fourth snapshot on gives a
+  window p-value below 1e-6, and a 20 % dimmer source a rate p-value
+  below 1e-6 while the window and shape tests stay above 1e-3.
+
 **Corrections, heralded sources, time tags, files**
 
 - The background correction inverts the simulator's own background
   model to 1e-12; the dead-time correction round-trips to 1e-12 and
   its forward formula matches the photon-by-photon detector chain on
   Poisson light within 2 %.
+- `signal_fraction_from_counts`: its ends equal Clopper-Pearson limits
+  solved independently from binomial tail sums (to 1e-9), and over
+  2000 simulated pairs of counter readings (two settings) its 90 %
+  intervals cover the true rho at least 90 % of the time (within three
+  standard errors). With `rho_ci`, the corrected interval equals the
+  smallest and largest value on a 201 x 201 grid over the two
+  intervals (to 1e-12), for intervals below, across and above 1; and
+  a 97.5 % g2 interval with a 97.5 % rho interval covered the true
+  g2(0) in at least 95 % of 2000 simulated runs.
 - Heralded formulas: both satisfy their defining quadratics; the
   smallest possible CAR gives exactly 1 (laser-pumped, CAR 1) and 1.5
   (thermal, CAR 2); at large CAR they approach 2/CAR and 4/CAR; the
@@ -1332,7 +1499,28 @@ figures of the manuscript, and `load_fisequr` on the real data set.
 
 ## Corrections in earlier versions
 
-**0.11.0 (this release) corrects these.**
+**0.12.0 (this release) corrects these.**
+
+- **Profile-likelihood intervals were wrong.** `profile_likelihood_ci`
+  minimized over the shelving time `tau2` in nanoseconds, a scale on
+  which the optimizer hardly moved it from its start value (250 ns).
+  It then measured the deviance from the smallest value on its grid
+  of g2(0) (steps of 0.025) and drew the ends by straight lines
+  between grid points. For the data of example 3 it gave
+  [0.084, 0.126] with the flat level pinned and [0.067, 0.182] with it
+  free; the profile computed independently gives [0.078, 0.124] and
+  [0.064, 0.295]. The free interval was far too narrow. It now
+  searches the lifetimes and the flat level on a log scale, writes the
+  objective as half the Poisson deviance, and refines the best value
+  and both ends between grid points. It takes two to three times as
+  long as before (about 10 s for example 3).
+- **Inputs that ran on.** `SPRTCertifier.update` accepted a NaN time
+  step (the evidence became NaN and the test never decided) and
+  negative counts; `deadtime_corrected_rate`, `signal_fraction` and
+  `background_corrected_g2` returned NaN for NaN inputs; `fit_model`
+  accepted an infinite `r_hat`. These are now refused.
+
+**0.11.0 corrected these.**
 
 - **Pulsed g2(0) too low when the peaks overlap.** The peak-area
   analysis, the default of `analyze_pulsed` up to 0.10.0, subtracts a
@@ -1475,6 +1663,22 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   leaves the jitter out of the afterpulse terms. The analysis tools
   do not model afterpulsing: like background light, it raises the
   measured g2(0).
+- `profile_likelihood_ci` takes about 10 s for a 121-bin histogram.
+  Its interval is that of the three-level model within the search
+  ranges; when a nuisance parameter ends on a range limit (a warning
+  says so), check the interval with a wider range, as in example 3.
+- `fit_model` is a local search. When a model fits badly it can stop
+  short of its best fit, by an amount that depends on the SciPy
+  version (example 10: deviance 350.16 with SciPy 1.18, 345.75 with
+  SciPy 1.10). The p-value is then too small, which does not change a
+  clear rejection.
+- `check_stationarity` uses the chi-square law of its statistics, which
+  needs at least about 5 expected counts per cell; it refuses smaller
+  counts instead of guessing. It tells that the source changed, not
+  how, and a change slower than the whole run, or faster than one
+  snapshot, is not seen.
+- The rho interval of `signal_fraction_from_counts` assumes that the
+  background beside the emitter equals the background on it.
 - The pulsed comb fit assumes that every peak, the zero-delay one
   included, has the same shape (a two-sided exponential blurred by
   Gaussian jitter) and that the background under the comb is flat;
@@ -1494,9 +1698,11 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Where it comes from
 
-The package is the installable part of the manuscript *"Closed-loop,
+The package is the installable part of the paper *"Closed-loop,
 event-driven machine learning for autonomous triage of single-photon
-emitters"*. The
+emitters"* by T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M.
+Mohsin, accepted in *ACS Photonics* and in production (no DOI yet;
+CITATION.cff lists it as in press). The
 [companion repository](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters)
 reproduces the paper itself.
 

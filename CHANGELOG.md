@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.12.0 (2026-10-10)
+
+Corrects the profile-likelihood interval, adds a stationarity check
+for a series of snapshots and a measured signal fraction with an
+interval that the background correction can carry, and refuses more
+inputs that gave NaN.
+
+### Added
+
+- `check_stationarity` (`sparq.sequential`, exported from `sparq`):
+  three Pearson chi-square tests on a series of histograms of one
+  site, conditional on totals so that no emitter model is needed:
+  totals in proportion to the snapshot times (rate, dof J - 1), the
+  same window g2 in every snapshot (the windows of `bayesian_g2`, a
+  2 x J homogeneity test), and the same histogram shape up to a scale
+  (J x K homogeneity test with neighboring bins merged until every
+  expected count is at least `min_expected`, default 5). Tests with
+  smaller expected counts are refused. `consistent` is False when any
+  p-value is below alpha/3 (Bonferroni, alpha = 0.01 by default).
+  Checked against SciPy's `chisquare` and `chi2_contingency`, for
+  uniform p-values on 200 simulated steady series, and for detection
+  of a second emitter (window p < 1e-6) and of a 20 % dimmer source
+  (rate p < 1e-6, window and shape p > 1e-3). README example 19.
+- `signal_fraction_from_counts` (`sparq.analysis`, exported from
+  `sparq`): rho = 1 - (n_off/t_off)/(n_on/t_on) from counter readings
+  on and beside the emitter, with the Clopper-Pearson interval
+  (Clopper and Pearson, Biometrika 26, 404 (1934)) of the binomial
+  share of background counts mapped to rho. Checked against
+  Clopper-Pearson limits solved from binomial tail sums (1e-9) and
+  for coverage at or above the level on 2000 simulated readings.
+- `background_corrected_g2(..., rho_ci=(lo, hi))`: the corrected
+  interval over both the g2 interval and a rho interval (the box
+  corners, since the correction is monotone in each), with the
+  Bonferroni statement that two 97.5 % intervals give at least 95 %.
+  Checked against a 201 x 201 grid of the box and by a coverage
+  simulation. Without `rho_ci` the result is unchanged. README
+  example 20.
+
+### Fixed
+
+- `profile_likelihood_ci`: the nuisance parameters were minimized in
+  natural units, where L-BFGS-B left tau2 at about its 250 ns start
+  value; the deviance was measured from the smallest grid value
+  (grid step 0.025) and the ends were interpolated linearly; g2_hat
+  was a grid point. On the data of README example 3 (seed 0, 60 s):
+  with `c0_prior=(1.0, 0.01)` [0.0839, 0.1261] -> [0.0784, 0.1243],
+  g2_hat 0.1000 -> 0.1008; without it [0.0670, 0.1815] ->
+  [0.0639, 0.2948], g2_hat 0.0750 -> 0.0819. An independent
+  Nelder-Mead profile put the deviance at the old ends at 2.15 / 4.45
+  and 2.63 / 1.16 instead of 3.84; at the new ends it is 3.84 within
+  0.03 (test `test_profile_interval_ends_sit_at_the_chi_square_quantile`).
+  The profile now runs over log tau1, log tau2, a and log c0 with the
+  objective written as half the Poisson deviance, and g2_hat and the
+  ends are refined between grid points (to about 1e-4).
+- `SPRTCertifier.update` accepted a NaN time step (the evidence became
+  NaN and the test never decided) and negative or non-finite counts;
+  `deadtime_corrected_rate`, `signal_fraction` and
+  `background_corrected_g2` returned NaN for NaN inputs; `fit_model`
+  accepted an infinite `r_hat` and a `c0_prior` with an infinite sd
+  (the prior was then silently ignored). All are now refused with
+  ValueError (test `test_other_new_input_checks`).
+
+### Changed
+
+- `profile_likelihood_ci` refuses a `level` outside (0, 1) and fewer
+  than 3 grid points, and reports a malformed `c0_prior` as ValueError
+  (it was a TypeError for a single number). It takes two to three
+  times as long as before (about 10 s for README example 3), and its
+  RuntimeWarning about search limits now appears where the profile
+  really ends on a limit (for README example 3 with the flat level
+  pinned: tau2 at 800 ns; with 8000 ns the interval moves by 0.001).
+- Docs: README example 3 shows the corrected intervals and the search
+  limit check; example 11 the output with NumPy 2.5.3 and SciPy 1.18.1
+  (the sampler starts from a SciPy fit, and its output differs in the
+  last digit between versions; the 0.11.0 code gives the same numbers
+  here); the README and the docstring of `fit_model` say that its
+  local search can stop short of the best fit of a badly fitting
+  model by a SciPy-dependent amount (example 10: deviance 350.16 with
+  SciPy 1.18, 345.75 with SciPy 1.10); the paper is described as
+  accepted in ACS Photonics, in production, with no DOI yet, and
+  CITATION.cff lists it as the preferred citation (status in-press).
+  The docstring of `sparq.twin_torch` gave a(s) = a_1 s where the code
+  uses 2 a_1 s/(1 + s); the docstring now matches the code. The
+  docstring of `sparq.timetags` no longer says that no PTU reader
+  exists.
+- Type hints on the public functions touched.
+
+### Tests
+
+- 208 tests (195 before), the new ones in test_release_012.
+
 ## 0.11.0 (2026-09-30)
 
 Pulsed histograms are now analyzed by an exact fit of the whole comb of
