@@ -1,7 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.12.1 (2026-10-15)
 
+The SPARQ paper is published, and the citation now points to it.
+
+### Changed
+
+- Citation: the paper "Closed-Loop, Event-Driven Machine Learning for
+  Autonomous Triage of Single-Photon Emitters" (T. M. Mahim, M. N.
+  Islam, M. M. Rahman and A. S. M. Mohsin) was published online in
+  *ACS Photonics* on 15 October 2026,
+  doi:10.1021/acsphotonics.6c01984. `CITATION.cff` and the README now
+  give the DOI and the journal's title capitalization instead of
+  "accepted, in production, no DOI yet". Volume and pages are not yet
+  assigned. No code changed.
 - Packaging: the license is now given as the SPDX expression
   `license = "Apache-2.0"` with `license-files = ["LICENSE"]`, and the
   old license table and license classifier are gone. Building no longer

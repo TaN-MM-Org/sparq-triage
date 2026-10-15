@@ -39,10 +39,12 @@ time stamps, or a PicoQuant PTU file) and answers:
 
 The analysis core needs only NumPy and SciPy. An optional
 machine-learning layer (PyTorch) holds the neural estimators and the
-automated triage agent of the paper *"Closed-loop, event-driven
-machine learning for autonomous triage of single-photon emitters"*
-(T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M. Mohsin), accepted
-in *ACS Photonics* and now in production (no DOI yet); the
+automated triage agent of the paper *"Closed-Loop, Event-Driven
+Machine Learning for Autonomous Triage of Single-Photon Emitters"*
+(T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M. Mohsin),
+*ACS Photonics* (2026),
+[doi:10.1021/acsphotonics.6c01984](https://doi.org/10.1021/acsphotonics.6c01984);
+the
 [companion repository](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters)
 reproduces the paper itself.
 
@@ -1698,11 +1700,12 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Where it comes from
 
-The package is the installable part of the paper *"Closed-loop,
-event-driven machine learning for autonomous triage of single-photon
-emitters"* by T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M.
-Mohsin, accepted in *ACS Photonics* and in production (no DOI yet;
-CITATION.cff lists it as in press). The
+The package is the installable part of the paper *"Closed-Loop,
+Event-Driven Machine Learning for Autonomous Triage of Single-Photon
+Emitters"* by T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M.
+Mohsin, *ACS Photonics* (2026), published online on 15 October 2026,
+[doi:10.1021/acsphotonics.6c01984](https://doi.org/10.1021/acsphotonics.6c01984).
+Volume and pages are not yet assigned. The
 [companion repository](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters)
 reproduces the paper itself.
 
