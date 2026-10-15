@@ -78,7 +78,7 @@ from .sequential import WindowSPRT, check_stationarity
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.12.0"
+__version__ = "0.12.1"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
