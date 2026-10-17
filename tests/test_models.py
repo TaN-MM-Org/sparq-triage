@@ -4,6 +4,7 @@ p-values: uniform when the model is right, tiny when it is wrong."""
 import numpy as np
 import pytest
 from scipy.integrate import solve_ivp
+from scipy.signal import fftconvolve
 from scipy.stats import kstest
 
 from sparq import EmitterSite, HBTConfig, expected_histogram, g2_measured
@@ -19,13 +20,16 @@ def test_complex_blur_matches_real_formula_and_numerics():
         got = exp_conv_gauss_complex(tau, -1.0 / T, s)
         assert np.abs(got.imag).max() < 1e-15
         assert np.abs(got.real - _exp_conv_gauss(tau, T, s)).max() < 1e-13
-    # complex exponent against a brute-force convolution
+    # complex exponent against a brute-force convolution (a sum over a
+    # fine grid; from 0.13.0 the sum is done by FFT, which gives the same
+    # numbers as np.convolve to 1e-15 here and takes 0.1 s instead of a
+    # minute or more)
     lam, s = -0.2 + 1.3j, 0.5
     x = np.linspace(-80, 80, 160001)
     dx = x[1] - x[0]
     f = np.exp(lam * np.abs(x))
     k = np.exp(-x ** 2 / (2 * s * s)) / (s * np.sqrt(2 * np.pi))
-    num = np.convolve(f, k, mode="same") * dx
+    num = fftconvolve(f, k, mode="same") * dx
     ana = exp_conv_gauss_complex(tau, lam, s)
     assert np.abs(ana.real - np.interp(tau, x, num.real)).max() < 1e-6
     assert np.abs(ana.imag - np.interp(tau, x, num.imag)).max() < 1e-6
@@ -36,7 +40,7 @@ def test_complex_blur_matches_real_formula_and_numerics():
                             rate_kcps=400.0, blinking=False), 1)
     assert np.all(np.isfinite(eh(site, 1.0, HBTConfig())))
     x5 = np.linspace(-20, 20, 400001)
-    n5 = np.convolve(np.exp(-np.abs(x5) / 0.05), np.exp(
+    n5 = fftconvolve(np.exp(-np.abs(x5) / 0.05), np.exp(
         -x5 ** 2 / (2 * 0.495 ** 2)) / (0.495 * np.sqrt(2 * np.pi)),
         mode="same") * (x5[1] - x5[0])
     t5 = np.linspace(-5, 5, 41)
