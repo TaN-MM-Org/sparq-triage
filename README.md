@@ -36,6 +36,8 @@ time stamps, or a PicoQuant PTU file) and answers:
   overlap?
 - For a heralded pair source, what purity does a measured
   coincidence-to-accidental ratio allow, with my detectors?
+- How bright does the emitter get, and at what excitation power does it
+  saturate?
 
 The analysis core needs only NumPy and SciPy. An optional
 machine-learning layer (PyTorch) holds the neural estimators and the
@@ -53,6 +55,7 @@ reproduces the paper itself.
 - [A short guide to the words used here](#a-short-guide-to-the-words-used-here)
 - [Install, requirements and units](#install-requirements-and-units)
 - [Examples](#examples) (each with the output it prints)
+- [Tutorials](#tutorials) (two worked scripts, from data to a result)
 - [What is in the package](#what-is-in-the-package)
 - [When it refuses, and why](#when-it-refuses-and-why)
 - [How the results are checked](#how-the-results-are-checked)
@@ -167,7 +170,7 @@ Units:
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with sparq-triage 0.12.0 (Python 3.13, NumPy 2.5.3, SciPy
+printed with sparq-triage 0.13.0 (Python 3.13, NumPy 2.5.3, SciPy
 1.18.1). All emitter numbers are illustrative values, not
 measurements. The data are simulated with a fixed random seed, so you
 get the same output. With other NumPy or SciPy versions some printed
@@ -1014,6 +1017,144 @@ the background beside the emitter equals the background on it, and
 count rates low enough that dead time does not matter (or rates
 corrected with `deadtime_corrected_rate` first).
 
+### 21. Saturation curve
+
+```python
+import numpy as np
+from sparq import fit_saturation, saturation_curve
+
+# Illustrative saturation measurement: 0.5 s of counting at each power
+# (the first with the laser blocked, for the dark counts)
+power = np.array([0, 50, 100, 200, 300, 450, 600, 900, 1300, 2000.0])  # uW
+truth = dict(R_inf=600e3, P_sat=350.0, bg_slope=60.0, dark=300.0)
+counts = np.random.default_rng(5).poisson(saturation_curve(power, **truth) * 0.5)
+
+fit = fit_saturation(power, counts, t_s=0.5)
+print(f"R_inf {fit['R_inf'] / 1e3:.1f} kcps [{fit['R_inf_lo'] / 1e3:.1f}, "
+      f"{fit['R_inf_hi'] / 1e3:.1f}], P_sat {fit['P_sat']:.0f} uW "
+      f"[{fit['P_sat_lo']:.0f}, {fit['P_sat_hi']:.0f}] (95 %)")
+print(f"background {fit['bg_slope']:.1f} cps/uW, dark {fit['dark']:.0f} cps, "
+      f"p-value {fit['p_value']:.2f}")
+print(f"signal fraction at 300 uW: {fit['rho'][4]:.3f}")
+```
+
+```
+R_inf 605.6 kcps [597.0, 614.3], P_sat 355 uW [348, 362] (95 %)
+background 58.2 cps/uW, dark 324 cps, p-value 0.48
+signal fraction at 300 uW: 0.940
+```
+
+`fit_saturation` fits the counts at each excitation power with
+`R_inf P / (P + P_sat) + b P + d`: the emitter's rate, which levels off
+at `R_inf` and reaches half of it at `P_sat`, plus background light that
+grows in proportion to the power (`b`) and the detectors' dark counts
+(`d`). This is the curve that the package's three-level rate model gives
+under continuous excitation when the pump rate is proportional to the
+power: `saturation_from_rates` gives `R_inf` and the pump rate at
+saturation from the model's rates, and the tests check the formula
+against the model's steady state. The counts are fitted by their Poisson
+likelihood, and the intervals are profile-likelihood intervals, as in
+example 3. `rho` is the emitter's share of the light at each power (the
+signal fraction of example 6) as the fit sees it. When all powers stay
+far below `P_sat`, the curve has hardly bent, and a late, high
+saturation cannot be told from a straight rise: the upper ends of the
+intervals are then NaN, `saturated` is False and the function warns
+(the tutorial below shows this). The p-value assumes Poisson counts. A
+drifting focus or laser power makes the points scatter more, and a
+curve of another shape does not fit; either way the p-value comes out
+small.
+
+### 22. An exact interval and test for the window g2
+
+```python
+import numpy as np
+from sparq import (EmitterSite, HBTConfig, expected_histogram, bayesian_g2,
+                   window_g2_ci, count_ratio_ci)
+
+site = EmitterSite(dict(tau1=15.0, tau2=250.0, a=0.3, rate_kcps=150.0,
+                        rho=0.95, blinking=False), n_emitters=2)  # a pair
+cfg = HBTConfig()
+hist = np.random.default_rng(2).poisson(expected_histogram(site, 30.0, cfg))
+w = window_g2_ci(hist, cfg)                       # exact, frequentist
+lo, hi = bayesian_g2(hist, cfg).credible_interval(0.95)
+print(f"window g2 {w['g2']:.3f}: exact 95 % interval [{w['lo']:.3f}, "
+      f"{w['hi']:.3f}], Bayesian [{lo:.3f}, {hi:.3f}]")
+print(f"p-value of 'window g2 >= 0.5': {w['p_value']:.2f}")
+
+# pulsed: counts in the zero-delay peak against the sum of 8 side peaks
+r = count_ratio_ci(k0=37, kr=2410, n0=1, nr=8)
+print(f"peak ratio {r['g2']:.4f}, exact 95 % interval [{r['lo']:.4f}, "
+      f"{r['hi']:.4f}], p-value of '>= 0.5': {r['p_value']:.1e}")
+```
+
+```
+window g2 0.601: exact 95 % interval [0.492, 0.726], Bayesian [0.495, 0.722]
+p-value of 'window g2 >= 0.5': 0.97
+peak ratio 0.1228, exact 95 % interval [0.0863, 0.1698], p-value of '>= 0.5': 1.8e-27
+```
+
+`window_g2_ci` gives the window g2 of example 2 (the zero-delay bin
+against the far bins) with a confidence interval instead of a
+posterior. Given how many counts fell in the two windows together, the
+count in the zero-delay window is binomial, with a share set by the
+window g2 alone, whatever the count rate (the conditional method of
+Przyborowski and Wilenski, Biometrika 31, 313 (1940); example 13 uses
+the same fact). The Clopper-Pearson interval of that binomial (Clopper
+and Pearson, Biometrika 26, 404 (1934)) then covers the window g2 at
+least as often as the level says, for any count rate. `p_value` is the
+exact one-sided test of "window g2 >= 0.5": a small value says that the
+site is below 0.5, and calling a site single when the p-value is at
+most 0.05 does so for a site at 0.5 or above in at most 5 % of runs.
+With many counts, as here, the exact interval and the Bayesian one of
+example 2 nearly agree. `count_ratio_ci` does the same for any two
+counts, for example the zero-delay peak of a pulsed histogram against
+the sum of several side peaks; that ratio includes the background under
+the peaks, which raises it.
+
+## Tutorials
+
+Two scripts in the [`examples`](examples) folder of the source
+repository go from data to a final result with uncertainties. Each one
+makes its own data with a fixed random seed (illustrative numbers, not
+measurements) and uses only the package. Run them from the repository
+folder, for example `python examples/tutorial_saturation.py`. The output
+below is what they printed with sparq-triage 0.13.0 (Python 3.13, NumPy
+2.5.3, SciPy 1.18.1); each script quotes it at the top, and a test runs
+both scripts and checks their numbers.
+
+**Saturation curve** (`examples/tutorial_saturation.py`, about 2 s).
+Counts at 15 powers (one with the laser blocked, for the dark counts)
+are fitted with `fit_saturation`. The script prints `R_inf` and `P_sat`
+with their 95 % intervals, the background and dark rates, the emitter's
+share of the light at two powers, and what happens when the same
+emitter is measured only far below saturation.
+
+```
+R_inf = 849.1 kcps, 95 % interval [843.2, 855.1] (true 850)
+P_sat = 419.0 uW, 95 % interval [415.3, 422.7] (true 420)
+background 89.9 cps/uW, dark 233 cps; fit p-value 0.95
+signal fraction at 400 uW: 0.920; at 2400 uW: 0.770
+powers up to 12 uW only: saturated False, P_sat upper end nan, warning issued: True
+```
+
+**From time tags to a verdict** (`examples/tutorial_timetags.py`, about
+15 s). Two seconds of clicks from the photon-by-photon simulator, with
+detector jitter and dead time, are written to a PicoQuant PTU file and
+read back. The coincidence histogram then gives the window g2 with its
+exact interval and test (example 22), the Bayesian probability of
+example 2, and a profile-likelihood interval for g2(0) itself with the
+flat level pinned by the counted rates (example 3). The zero-delay bin
+holds only 12 counts (against about 90 per far bin), so both estimates
+scatter: in this run both come out below the true g2(0) of 0.1536,
+which lies inside both intervals.
+
+```
+399568 + 398752 clicks in 2 s (399.2 kcps counted)
+window g2 = 0.133, exact 95 % interval [0.069, 0.233]; p-value of g2 >= 0.5: 6.6e-09
+Bayesian P[window g2 < 0.5] = 1.000000
+model g2(0) = 0.113, 95 % interval [0.068, 0.162] (true 0.1536)
+```
+
 ## What is in the package
 
 Everything below except the last group is importable straight from
@@ -1062,6 +1203,12 @@ example) gives its inputs, units and conventions.
   `background_corrected_g2(rho_ci=...)` (example 20).
 - `check_stationarity`: whether a series of snapshots comes from a
   source that did not change (example 19).
+- `window_g2_ci`, `count_ratio_ci`: the window g2 (or any ratio of
+  two counts) with an exact confidence interval and the exact test of
+  "g2 >= 0.5" (example 22).
+- `fit_saturation`, `saturation_curve`, `saturation_from_rates`: the
+  saturation curve: count rate against excitation power, fitted with
+  intervals for `R_inf` and `P_sat` (example 21 and the first tutorial).
 - `load_timetags_csv`, `save_timetags_csv`, `correlate`,
   `correlate_start_stop`, `normalize_g2` -- time tags to g2
   (example 7). `read_ptu`, `load_ptu_timetags`, `save_ptu_t2` --
@@ -1156,7 +1303,9 @@ explicitly)
   fit options with `method="area"`; `g2_peak_area` a period so short
   that no delay lies 4.5 ns from every peak (use the fit);
 - `expected_histogram` gets `afterpulse_p` outside [0, 1] or a
-  non-positive `afterpulse_tau_ns`;
+  non-positive `afterpulse_tau_ns`; `expected_hist_pulsed` a lifetime
+  `tau_e` or period `t_rep` that is not positive and finite, a negative
+  `sigma_pair` or a non-finite `center_off` (from 0.13.0);
 - the data's bins are wider than the analysis grid's bins, which would
   leave grid bins empty or invent resolution (`rebin_real`, and so
   `analyze_histogram`; pass a coarser `cfg`); the analysis window
@@ -1238,7 +1387,20 @@ explicitly)
   `correlate`, both channels for `correlate_start_stop`;
 - `normalize_g2` gets a histogram of the wrong length, negative or
   non-finite counts, click counts that are not positive, or a
-  non-positive time;
+  non-positive time; `correlate` and `correlate_start_stop` time tags
+  that are not finite (from 0.13.0);
+- `fit_saturation` gets powers or counts that are not finite, negative
+  powers, counts that are negative or not whole, counting times that
+  are not positive, arrays of different lengths, fewer distinct powers
+  than the curve's parameters plus one (5 with the default background),
+  no positive power, no counts, an unknown `background` or `interval`,
+  or a `level` outside (0, 1); `saturation_from_rates` rates that are
+  not positive (`k_es` may be 0);
+- `window_g2_ci` gets what `bayesian_g2` refuses, counts that are not
+  whole, or no counts in either window; `count_ratio_ci` counts that
+  are negative or not whole, both counts zero, bin numbers that are not
+  positive, a `level` outside (0, 1) or a threshold that is not
+  positive;
 - `register_platform` gets something that is not a `Platform`, a name
   already in use (unless `overwrite=True`), a range with low > high,
   non-positive bounds (negative ones for `a_rng`), `rho` outside (0, 1]
@@ -1247,7 +1409,7 @@ explicitly)
 
 ## How the results are checked
 
-208 automated tests run on every push to `main` and every pull
+225 automated tests run on every push to `main` and every pull
 request. In CI they run on Python 3.10, 3.11, 3.12, 3.13 and 3.14 with
 CPU PyTorch; once more on Python 3.14 without PyTorch, where the
 machine-learning test files are skipped; and once more on Python 3.10
@@ -1375,6 +1537,10 @@ fixed seeds. The main checks:
   in 91 of 100 with a 2.5 ns lifetime and background, and in 94 of 100
   with about 7 counts in that peak; 6 % of 500 p-values fell below
   0.05.
+- The pulsed simulator (from 0.13.0) equals a sum of `peak_shape` over
+  161 peaks to 1e-12 for lifetimes of 1, 5 and 8 ns at 80 MHz, and the
+  comb fit of its noise-free 8 ns histogram returns g2(0) = 0.12 to
+  1e-4 (0.1031 with the 0.12.1 simulator, whose comb was cut short).
 
 **Other dip shapes and the posterior of g2(0)**
 
@@ -1470,9 +1636,42 @@ fixed seeds. The main checks:
   check uses data without such long gaps. Simulated tags through a PTU file give the
   same histogram within 2 counts per bin.
 - `correlate` equals a brute-force count of every pair; start-stop
-  never exceeds it; independent click streams normalize to g2 = 1;
+  never exceeds it; from 0.13.0 `correlate`, `correlate_start_stop` and
+  the detectors' dead-time pass equal the 0.12.1 loops count for count
+  (on simulated tags, dense random tags with ties and delays on bin
+  edges, and with the pairs split into several blocks); independent click streams normalize to g2 = 1;
   histogram and time-tag files round-trip exactly and malformed ones
   are refused.
+
+**Saturation curve and the exact window interval** (new in 0.13.0)
+
+- The saturation law equals the emission rate of the three-level rate
+  model, computed from the steady state of its rate matrix (an
+  eigenvector, `sparq.exact`), to 1e-12 for 30 random rate sets and
+  pump rates from 1e-3 to 100 times the radiative rate.
+- `fit_saturation`: from nearly noise-free counts (1e4 s per power) it
+  returns `R_inf` and `P_sat` to 1e-6. On a simulated curve an
+  independent Nelder-Mead minimization of the Poisson likelihood finds
+  no better fit, and at both ends of both 95 % intervals the deviance,
+  computed independently, is the chi-square quantile 3.84 within 0.01.
+  Of 40 simulated curves of a dim emitter (160 to 4600 counts per
+  power), at least 34 of the 95 % intervals for `P_sat` hold the truth.
+  Powers far below saturation give open intervals and a warning, and a
+  curve of another shape, R (1 - e^(-P/P0)), gets a p-value below 1e-6.
+  Done once outside the test suite, over 200 simulated curves each of
+  a bright emitter (2e4 to 6e5 counts per power) and of the dim one, the
+  95 % intervals held the true `P_sat` in 190 and 188 runs and the true
+  `R_inf` in 190 and 191; 2.5 % and 1 % of the p-values fell below 0.05
+  (the p-value errs on the large side).
+- `count_ratio_ci`: its ends equal Clopper-Pearson limits solved
+  independently from binomial tail sums (to 1e-9), and its p-value the
+  binomial tail sum (to 1e-12). Over 2000 simulated runs whose count
+  rate changes from run to run, the 95 % intervals hold the true window
+  g2 in at least 95 % of runs (less three standard errors), and the
+  test at 0.05 calls a site with window g2 of 0.5 single in at most 5 %
+  (plus three standard errors) and one at 0.1 in more than half. On a
+  300 s histogram `window_g2_ci` and the credible interval of
+  `bayesian_g2` agree within 3 %.
 
 **Machine learning**
 
@@ -1495,13 +1694,37 @@ fixed seeds. The main checks:
   of a series in synthetic files of its expected layout.
 - The version matches the installed metadata and CITATION.cff; the
   core modules import with PyTorch blocked.
+- Both tutorials run and print the numbers they quote (to 1 %, so that
+  the check also holds with other NumPy and SciPy versions).
 
 Not covered by tests: `TriageEnv` with a trained estimator and the
 figures of the manuscript, and `load_fisequr` on the real data set.
 
 ## Corrections in earlier versions
 
-**0.12.0 (this release) corrects these.**
+**0.13.0 (this release) corrects these.**
+
+- **The pulsed simulator cut its comb short.** `expected_hist_pulsed`
+  added up the peaks only to one laser period beyond the recorded
+  delays, so the tails of farther peaks were missing near the ends of
+  the record. That is negligible for short lifetimes (below 4e-6 of the
+  edge bins for 2 ns at 80 MHz) but not for long ones: the edge bins
+  were 0.6 % low for 5 ns and 3.2 % low for 8 ns, and the comb fit of
+  the noise-free 8 ns histogram gave g2(0) = 0.1031 (lifetime 7.65 ns)
+  instead of 0.12. The comb now includes every peak whose tail reaches
+  the record, and the fit returns 0.1200. The fit itself
+  (`fit_pulsed`) was right; the simulated data were not.
+- **Docstrings.** `fit_g2_histogram` and the module documentation
+  called its fit Levenberg-Marquardt; with search limits, SciPy's
+  `curve_fit` uses its trust-region reflective method. The docstring of
+  `sparq.physics` said that the fast simulator models neither blinking
+  nor dead time nor afterpulsing; it has modeled them since 0.10.0 and
+  0.11.0.
+- **Time tags that are not numbers.** `correlate` and
+  `correlate_start_stop` left a NaN time tag out without a word; they
+  now refuse tags that are not finite.
+
+**0.12.0 corrected these.**
 
 - **Profile-likelihood intervals were wrong.** `profile_likelihood_ci`
   minimized over the shelving time `tau2` in nanoseconds, a scale on
@@ -1681,6 +1904,17 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   snapshot, is not seen.
 - The rho interval of `signal_fraction_from_counts` assumes that the
   background beside the emitter equals the background on it.
+- `fit_saturation` assumes the curve `R_inf P/(P + P_sat) + b P + d`
+  (continuous excitation, a pump rate proportional to the power, and
+  background light proportional to the power) and Poisson counts. Its
+  intervals are too narrow when the points scatter more than that, for
+  example from a drifting focus; a small p-value warns of it. `P_sat`
+  and `R_inf` are bounded only when the powers reach well into
+  saturation.
+- `window_g2_ci` and `count_ratio_ci` give exact but conservative
+  intervals (they cover at least as often as the level says), and like
+  `bayesian_g2` they are for the window g2, an upper bound on g2(0)
+  when the dip is wider than the window.
 - The pulsed comb fit assumes that every peak, the zero-delay one
   included, has the same shape (a two-sided exponential blurred by
   Gaussian jitter) and that the background under the comb is flat;

@@ -1,5 +1,122 @@
 # Changelog
 
+## 0.13.0 (2026-10-17)
+
+Fits the saturation curve of an emitter with intervals, adds an exact
+frequentist interval and test for the window g2, corrects the pulsed
+simulator for long lifetimes, and makes the correlators and the
+detector dead time faster with the same results. Two worked tutorials.
+
+### Added
+
+- `fit_saturation`, `saturation_curve` and `saturation_from_rates`
+  (new module `sparq.saturation`, exported from `sparq`): the count
+  rate against excitation power, R_inf P/(P + P_sat) + b P + d, fitted
+  to the counts at each power by their Poisson likelihood (for a given
+  P_sat the rest is a convex problem, solved exactly; P_sat is searched
+  on a log grid and refined), with profile-likelihood intervals for
+  R_inf and P_sat, the fitted background slope b and dark rate d, the
+  signal fraction at each power and a goodness-of-fit p-value (the
+  exact deviance moments of `fit_pulsed`). `background` may be
+  "linear" (default), "constant" or "none"; `interval` "both", "P_sat"
+  or None. When the powers stay far below saturation the upper ends
+  are NaN, `saturated` is False and a RuntimeWarning is issued. The
+  curve is the steady-state emission rate of the package's three-level
+  rate model with a pump rate proportional to the power;
+  `saturation_from_rates` gives R_inf and the pump rate at saturation
+  from the rates. No literature value is used: the law is derived from
+  the rate equations and checked against the steady state of
+  `sparq.exact.liouvillian` to 1e-12 (30 random rate sets). The fit
+  recovers R_inf and P_sat to 1e-6 from nearly noise-free counts; an
+  independent Nelder-Mead minimization finds no better fit, and the
+  independently computed deviance at both ends of both intervals is
+  3.84 within 0.01; at least 34 of 40 simulated 95 % P_sat intervals
+  hold the truth (done once outside the suite: 190 and 188 of 200 for
+  P_sat, 190 and 191 for R_inf, for a bright and a dim emitter); open
+  intervals are flagged for unsaturated data, and a curve of another
+  shape gets p < 1e-6. README example 21.
+- `window_g2_ci` and `count_ratio_ci` (`sparq.bayes`, exported from
+  `sparq`): the window g2 of `bayesian_g2`, or any ratio of two
+  Poisson counts per bin, with the exact conditional (binomial)
+  confidence interval (Przyborowski and Wilenski, Biometrika 31, 313
+  (1940); Clopper and Pearson, Biometrika 26, 404 (1934)) and the exact
+  one-sided p-value of "g >= threshold". Checked against
+  Clopper-Pearson limits solved from binomial tail sums (1e-9), the
+  binomial tail sum (1e-12), coverage and test size on 2000 simulated
+  runs with a changing count rate, and the Bayesian interval at many
+  counts (3 %). README example 22.
+- `examples/tutorial_saturation.py` and `examples/tutorial_timetags.py`
+  (see Tutorials).
+
+### Fixed
+
+- `expected_hist_pulsed` added the peaks only up to one period beyond
+  the record, so the tails of farther peaks were missing near its ends:
+  the edge bins were low by 3.7e-6 (2 ns lifetime at 80 MHz), 2.3e-4
+  (3 ns), 0.57 % (5 ns) and 3.2 % (8 ns). The exact comb fit of the
+  noise-free simulated histogram gave g2(0) = 0.1189 (5 ns) and 0.1031
+  (8 ns, fitted lifetime 7.65 ns) instead of 0.12; it now gives 0.1200
+  (test `test_pulsed_simulator_keeps_far_peak_tails`). The comb now
+  holds every peak whose tail reaches the record (30 lifetimes plus 8
+  jitter widths). README example 17 prints the same as before.
+- Docstrings: `fit_g2_histogram` and the `sparq.analysis` and
+  `sparq.estimators` module docstrings called the fit
+  Levenberg-Marquardt; `curve_fit` with search limits uses SciPy's
+  trust-region reflective method. The `sparq.physics` module docstring
+  said that the histogram twin models neither blinking, dead time nor
+  afterpulsing; it has since 0.10.0 and 0.11.0.
+
+### Changed
+
+- `correlate` and `correlate_start_stop` refuse time tags that are not
+  finite (a NaN tag was silently left out) and arrays that are not
+  1-D; both take the tags as float64. `expected_hist_pulsed` refuses a
+  `tau_e` or `t_rep` that is not positive and finite, a negative or
+  non-finite `sigma_pair` and a non-finite `center_off` (test
+  `test_pulsed_simulator_refuses_bad_shapes`). The photon-by-photon
+  simulator refuses a NaN dead time (`DetectorImpairments`), with which
+  0.12.1 dropped every click.
+- Type hints on the public functions touched.
+
+### Performance
+
+All with the same results; the tests keep the 0.12.1 loops and compare
+count for count. Measured on README example 7's tags (375 000 per
+channel), median of three interleaved series of seven runs each, on
+the same machine:
+
+- `correlate`: pairs formed without a Python loop over the start tags,
+  in blocks of about a million pairs: 107.5 ms -> 47.2 ms (2.3 times).
+- `correlate_start_stop`: 103.0 ms -> 45.8 ms (2.2 times).
+- The detectors' dead-time pass in the photon-by-photon simulator
+  (`DetectorImpairments`): only clicks closer than the dead time to
+  the previous click are visited: 85.2 ms -> 1.1 ms (80 times) at
+  45 ns. The simulator as a whole is still dominated by drawing the
+  emission times.
+- Tests: the brute-force convolutions in
+  `test_complex_blur_matches_real_formula_and_numerics` are computed by
+  FFT (the same numbers to 1e-15 at the compared points): 350 s ->
+  0.15 s on the loaded test machine.
+
+### Tutorials
+
+- `examples/tutorial_saturation.py` (about 2 s): counts at 15 powers to
+  R_inf and P_sat with 95 % intervals, the background and dark rates,
+  the signal fraction, and the open intervals of data far below
+  saturation.
+- `examples/tutorial_timetags.py` (about 15 s): simulated clicks with
+  detector jitter and dead time, through a PicoQuant PTU file, to the
+  histogram, the exact window-g2 interval and test, the Bayesian
+  probability and a profile-likelihood interval for g2(0).
+- Their printed output is quoted at the top of each script and in the
+  README ("Tutorials"); `tests/test_tutorials.py` runs both and checks
+  the numbers (to 1 %).
+
+### Tests
+
+- 225 tests (208 before): test_release_013 (15) and test_tutorials (2).
+  test_metadata also imports `sparq.saturation` with PyTorch blocked.
+
 ## 0.12.1 (2026-10-15)
 
 The SPARQ paper is published, and the citation now points to it.
