@@ -1,4 +1,4 @@
-"""Purity estimators: Levenberg–Marquardt fit baseline, CNN on integrated
+"""Purity estimators: least-squares fit baseline, CNN on integrated
 histograms (Kudyshev-style), and an event-driven spiking neural network
 (surrogate-gradient LIF) that consumes sliced coincidence streams and
 supports anytime (early-decision) readout.

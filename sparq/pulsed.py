@@ -38,12 +38,35 @@ def peak_shape(tau, tau_e, sigma_pair):
 
 def expected_hist_pulsed(cfg: HBTConfig, T_s, rate_cps, g2_0, tau_e,
                          a=0.0, tau2=200.0, bg_frac=0.0, sigma_pair=0.5,
-                         center_off=0.0, t_rep=T_REP_NS):
-    """Mean counts per bin on the cfg grid for acquisition T_s seconds."""
+                         center_off=0.0, t_rep=T_REP_NS) -> np.ndarray:
+    """Mean counts per bin on the cfg grid for acquisition T_s seconds.
+
+    Each peak's density is taken at the bin center times the bin width
+    (the midpoint rule; `fit_pulsed` integrates each bin exactly). The
+    comb includes every peak whose tail reaches the record (from 0.13.0;
+    up to 0.12.1 it stopped one period beyond the record, so that for
+    lifetimes of several ns the tails of farther peaks were missing:
+    3 % of the edge bins for 8 ns at 80 MHz).
+
+    Refuses (ValueError, new in 0.13.0) a lifetime tau_e or period
+    t_rep that is not positive and finite, a negative or non-finite
+    sigma_pair, and a non-finite center_off."""
+    for name, v in (("tau_e", tau_e), ("t_rep", t_rep)):
+        if not (np.isfinite(float(v)) and float(v) > 0.0):
+            raise ValueError(f"{name} must be positive and finite (ns)")
+    if not (np.isfinite(float(sigma_pair)) and float(sigma_pair) >= 0.0):
+        raise ValueError("sigma_pair must be finite and >= 0 (ns)")
+    if not np.isfinite(float(center_off)):
+        raise ValueError("center_off must be finite (ns)")
     r_a = r_b = 0.5 * rate_cps
     A = r_a * r_b * (t_rep * 1e-9) * T_s          # counts per side peak
     tau = cfg.bin_centers - center_off
-    kmax = int(np.ceil((cfg.tau_max + abs(center_off)) / t_rep)) + 1
+    # every peak whose tail reaches the record (e^-30 of a peak beyond);
+    # up to 0.12.1 the comb stopped one period beyond the record, which
+    # left out the tails of farther peaks: for a lifetime of 8 ns at
+    # 80 MHz the edge bins were 3 % low
+    reach = 30.0 * float(tau_e) + 8.0 * float(sigma_pair)
+    kmax = int(np.ceil((cfg.tau_max + abs(center_off) + reach) / t_rep)) + 1
     mu = np.zeros(cfg.n_bins)
     for k in range(-kmax, kmax + 1):
         amp = g2_0 if k == 0 else 1.0 + a * np.exp(-abs(k) * t_rep / tau2)

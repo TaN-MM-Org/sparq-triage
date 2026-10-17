@@ -65,7 +65,7 @@ from scipy.special import betainc, betaincinv, betaln
 
 from .physics import HBTConfig
 
-__all__ = ["G2Posterior", "bayesian_g2"]
+__all__ = ["G2Posterior", "bayesian_g2", "count_ratio_ci", "window_g2_ci"]
 
 
 @dataclasses.dataclass
@@ -194,6 +194,20 @@ def bayesian_g2(hist, cfg: HBTConfig | None = None, prior=(0.5, 0.0),
         raise ValueError(f"hist must have cfg.n_bins = {cfg.n_bins} bins")
     if not np.all(np.isfinite(y)) or np.any(y < 0.0):
         raise ValueError("counts must be finite and nonnegative")
+    m0, mr = _windows(cfg, n_center_bins, lo_frac)
+    a, b = float(prior[0]), float(prior[1])
+    if a <= 0.0 or b < 0.0:
+        raise ValueError("prior must have shape a > 0 and rate b >= 0")
+    k0 = float(y[m0].sum())
+    kr = float(y[mr].sum())
+    n0 = int(m0.sum())
+    nr = int(mr.sum())
+    return G2Posterior(alpha0=a + k0, beta0=b + n0, alphar=a + kr,
+                       betar=b + nr, k0=k0, n0=n0, kr=kr, nr=nr)
+
+
+def _windows(cfg, n_center_bins, lo_frac):
+    """Masks of the central and reference windows of `bayesian_g2`."""
     if cfg.n_bins % 2 == 0:
         raise ValueError("cfg.n_bins must be odd (a bin centered at 0)")
     if n_center_bins < 1 or n_center_bins % 2 == 0:
@@ -208,12 +222,101 @@ def bayesian_g2(hist, cfg: HBTConfig | None = None, prior=(0.5, 0.0),
         raise ValueError("reference window is empty; lower lo_frac")
     if np.any(m0 & mr):
         raise ValueError("central and reference windows overlap")
-    a, b = float(prior[0]), float(prior[1])
-    if a <= 0.0 or b < 0.0:
-        raise ValueError("prior must have shape a > 0 and rate b >= 0")
-    k0 = float(y[m0].sum())
-    kr = float(y[mr].sum())
-    n0 = int(m0.sum())
-    nr = int(mr.sum())
-    return G2Posterior(alpha0=a + k0, beta0=b + n0, alphar=a + kr,
-                       betar=b + nr, k0=k0, n0=n0, kr=kr, nr=nr)
+    return m0, mr
+
+
+# ----------------------------------------------------------------------
+# exact frequentist interval and test for the window g2 (new in 0.13.0)
+# ----------------------------------------------------------------------
+
+def count_ratio_ci(k0, kr, n0: float = 1.0, nr: float = 1.0,
+                   level: float = 0.95, threshold: float = 0.5) -> dict:
+    """Exact confidence interval and test for the ratio of two Poisson
+    rates per bin, g = (mu0 / n0) / (mur / nr), from the counts k0 (in n0
+    bins) and kr (in nr bins) (new in 0.13.0).
+
+    This is the frequentist counterpart of `bayesian_g2`, for the same
+    window g2 or for any such ratio, for example the counts of the
+    zero-delay peak of a pulsed histogram (n0 = 1) against the summed
+    counts of nr side peaks (the raw ratio, background included).
+
+    Given the total k = k0 + kr, k0 is binomial with success
+    probability p = n0 g / (n0 g + nr), whatever the rates are: the
+    conditional method of Przyborowski and Wilenski (Biometrika 31, 313
+    (1940)). The interval is the Clopper-Pearson interval for p
+    (Clopper and Pearson, Biometrika 26, 404 (1934)) mapped to g
+    = nr p / (n0 (1 - p)), which covers the true g with probability at
+    least `level` for every rate (it is conservative). `p_value` is the
+    exact one-sided p-value of the hypothesis g >= threshold against
+    g < threshold, P[K0 <= k0 | k] at g = threshold: a small value says
+    that the window g2 is below the threshold, and rejecting when
+    p_value <= alpha wrongly rejects a site with g >= threshold with
+    probability at most alpha.
+
+    k0, kr : whole, non-negative counts, not both zero.
+    n0, nr : positive numbers of bins (or exposures) behind them.
+
+    Returns dict(g2, lo, hi, level, p_value, threshold, k0, kr, n0, nr):
+    g2 is (k0/n0)/(kr/nr) (inf when kr = 0), lo is 0 when k0 = 0 and hi
+    is inf when kr = 0.
+    """
+    from scipy.stats import beta as beta_dist
+    from scipy.stats import binom
+    ks = []
+    for name, v in (("k0", k0), ("kr", kr)):
+        v = float(v)
+        if not (np.isfinite(v) and v >= 0 and v == np.floor(v)):
+            raise ValueError(f"{name} must be a whole, non-negative count")
+        ks.append(v)
+    k0, kr = ks
+    n0, nr = float(n0), float(nr)
+    if not (np.isfinite(n0) and np.isfinite(nr) and n0 > 0 and nr > 0):
+        raise ValueError("n0 and nr must be positive")
+    level = float(level)
+    if not (0.0 < level < 1.0):
+        raise ValueError("level must lie in (0, 1)")
+    threshold = float(threshold)
+    if not (np.isfinite(threshold) and threshold > 0):
+        raise ValueError("threshold must be positive")
+    k = k0 + kr
+    if k <= 0:
+        raise ValueError("no counts in either window: nothing to estimate")
+    a = 0.5 * (1.0 - level)
+    p_lo = 0.0 if k0 == 0 else float(beta_dist.ppf(a, k0, k - k0 + 1))
+    p_hi = 1.0 if k0 == k else float(beta_dist.ppf(1.0 - a, k0 + 1, k - k0))
+
+    def g_of(p):
+        return nr * p / (n0 * (1.0 - p)) if p < 1.0 else np.inf
+
+    p_t = n0 * threshold / (n0 * threshold + nr)
+    return dict(g2=(k0 / n0) / (kr / nr) if kr > 0 else np.inf,
+                lo=g_of(p_lo), hi=g_of(p_hi), level=level,
+                p_value=float(binom.cdf(k0, k, p_t)), threshold=threshold,
+                k0=k0, kr=kr, n0=n0, nr=nr)
+
+
+def window_g2_ci(hist, cfg: HBTConfig | None = None, level: float = 0.95,
+                 threshold: float = 0.5, n_center_bins: int = 1,
+                 lo_frac: float = 0.65) -> dict:
+    """Exact confidence interval for the window g2 of a histogram, and the
+    exact test of g >= threshold (new in 0.13.0).
+
+    The same estimand and windows as `bayesian_g2` (the counts of the
+    `n_center_bins` central bins against those of the reference bins at
+    |tau| >= lo_frac tau_max), with the frequentist interval and
+    p-value of `count_ratio_ci` instead of a posterior. No emitter
+    model and no count rate are needed. The histogram must hold Poisson
+    counts on the grid `cfg`, centered on the dip (native bins, or bins
+    merged whole). Refusals as for `bayesian_g2`, and a histogram with
+    no counts in either window. Returns the dict of `count_ratio_ci`.
+    """
+    if cfg is None:
+        cfg = HBTConfig()
+    y = np.asarray(hist, dtype=float)
+    if y.ndim != 1 or y.size != cfg.n_bins:
+        raise ValueError(f"hist must have cfg.n_bins = {cfg.n_bins} bins")
+    if not np.all(np.isfinite(y)) or np.any(y < 0.0):
+        raise ValueError("counts must be finite and nonnegative")
+    m0, mr = _windows(cfg, n_center_bins, lo_frac)
+    return count_ratio_ci(float(y[m0].sum()), float(y[mr].sum()),
+                          int(m0.sum()), int(mr.sum()), level, threshold)

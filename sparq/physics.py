@@ -12,10 +12,12 @@ Hanbury Brown–Twiss (HBT) correlation statistics, and two simulators:
 
 2. A *full Monte-Carlo photon-stream* simulator: a continuous-time Markov
    chain of the emitter level structure, photon-by-photon, with detector
-   impairments (IRF jitter, dead time, afterpulsing) and blinking that
-   the histogram twin does NOT model.  It serves (a) to validate the twin
-   against the analytic law and (b) as the held-out "target domain" for
-   the sim-to-real (GAN) experiments.
+   impairments (IRF jitter, dead time, afterpulsing) and blinking. It
+   serves (a) to validate the twin against the analytic law and (b) as
+   the held-out "target domain" for the sim-to-real (GAN) experiments.
+   (From 0.10.0 and 0.11.0 the histogram twin also models blinking
+   exactly, dead time through the count rates and afterpulsing; up to
+   0.12.1 this docstring said that it models none of them.)
 
 Analytic model (three-level system: ground g, excited e, shelving s):
 
@@ -647,43 +649,98 @@ def _telegraph_gate(times, ton_ns, toff_ns, T_ns, rng):
     return times[on]
 
 
+def _deadtime_keep(t, dead_time_ns):
+    """Which clicks of the sorted times t a non-paralyzable detector
+    counts: a click is counted when at least dead_time_ns has passed
+    since the last counted one (the greedy pass of `_detector_chain`).
+
+    From 0.13.0 only clicks closer than dead_time_ns to the previous
+    click are visited in Python: a click with a larger gap to its
+    predecessor is always counted (the last counted click lies no later
+    than the predecessor), so it starts a new run. Up to 0.12.1 every
+    click was visited. The result is the same click for click (the
+    tests compare with the 0.12.1 loop)."""
+    td = float(dead_time_ns)
+    if np.isnan(td):
+        raise ValueError("dead_time_ns must be a number")
+    keep = np.ones(len(t), bool)
+    if len(t) < 2:
+        return keep
+    close = np.nonzero(np.diff(t) < td)[0] + 1
+    drop = []
+    last = -np.inf
+    prev = -2
+    for i, ti, tp in zip(close.tolist(), t[close].tolist(),
+                         t[close - 1].tolist()):
+        if i - 1 != prev:             # the click before i was counted
+            last = tp
+        if ti - last >= td:
+            last = ti
+        else:
+            drop.append(i)
+        prev = i
+    keep[drop] = False
+    return keep
+
+
 def _detector_chain(t, imp: DetectorImpairments, rng):
     """IRF jitter + dead time + afterpulsing."""
     t = np.sort(t + rng.normal(0, imp.sigma_irf_ns, len(t)))
-    # dead time (sequential — vectorized via greedy pass)
-    keep = np.ones(len(t), bool)
-    last = -np.inf
-    for i in range(len(t)):           # rates ~1e5/s -> arrays are small enough
-        if t[i] - last >= imp.dead_time_ns:
-            last = t[i]
-        else:
-            keep[i] = False
-    t = t[keep]
+    t = t[_deadtime_keep(t, imp.dead_time_ns)]
     # afterpulsing
     ap = t[rng.random(len(t)) < imp.afterpulse_p]
     ap = ap + imp.dead_time_ns + rng.exponential(imp.afterpulse_tau_ns, len(ap))
     return np.sort(np.concatenate([t, ap]))
 
 
-def correlate(t_a, t_b, cfg: HBTConfig):
-    """HBT coincidence histogram from two timestamp arrays (ns).
+_PAIR_BLOCK = 1 << 20          # pairs histogrammed at a time by correlate
+
+
+def correlate(t_a, t_b, cfg: HBTConfig) -> np.ndarray:
+    """HBT coincidence histogram from two timestamp arrays (ns): every
+    pair (a, b) with delay t_b - t_a in [-tau_max, +tau_max) counts.
 
     t_b must be sorted ascending (it is searched by bisection); an
     unsorted t_b is refused with ValueError. t_a may be in any order.
+    Times that are not finite are refused (new in 0.13.0; up to 0.12.1
+    a NaN tag was silently left out).
+
+    From 0.13.0 the pairs are formed without a Python loop over t_a,
+    in blocks of about a million pairs; the histogram is the same count
+    for count as up to 0.12.1 (the tests compare with the 0.12.1 loop).
     """
-    if np.any(np.diff(np.asarray(t_b, dtype=float)) < 0):
+    t_a = np.asarray(t_a, dtype=float)
+    t_b = np.asarray(t_b, dtype=float)
+    if t_a.ndim != 1 or t_b.ndim != 1:
+        raise ValueError("t_a and t_b must be 1-D arrays of times (ns)")
+    if not (np.all(np.isfinite(t_a)) and np.all(np.isfinite(t_b))):
+        raise ValueError("time tags must be finite")
+    if np.any(np.diff(t_b) < 0):
         raise ValueError("t_b must be sorted ascending")
     hist = np.zeros(cfg.n_bins)
     if len(t_a) == 0 or len(t_b) == 0:
         return hist
     lo = np.searchsorted(t_b, t_a - cfg.tau_max)
     hi = np.searchsorted(t_b, t_a + cfg.tau_max)
-    diffs = []
-    for i in range(len(t_a)):
-        if hi[i] > lo[i]:
-            diffs.append(t_b[lo[i]:hi[i]] - t_a[i])
-    if not diffs:
+    n = hi - lo
+    if not n.any():
         return hist
-    d = np.concatenate(diffs)
-    hist, _ = np.histogram(d, bins=cfg.n_bins, range=(-cfg.tau_max, cfg.tau_max))
-    return hist.astype(np.float32)
+    counts = np.zeros(cfg.n_bins, np.int64)
+    cum = np.cumsum(n)
+    start = 0
+    while start < t_a.size:
+        base = int(cum[start - 1]) if start else 0
+        stop = max(int(np.searchsorted(cum, base + _PAIR_BLOCK,
+                                       side="right")), start + 1)
+        nb = n[start:stop]
+        tot = int(nb.sum())
+        if tot:
+            # pair j of start i: stop index lo[i] + j, j < n[i]
+            first = np.repeat(lo[start:stop], nb)
+            within = np.arange(tot) - np.repeat(np.cumsum(nb) - nb, nb)
+            d = t_b[first + within] - np.repeat(t_a[start:stop], nb)
+            h, _ = np.histogram(d, bins=cfg.n_bins,
+                                range=(-cfg.tau_max, cfg.tau_max))
+            counts += h
+        start = stop
+    return counts.astype(np.float32)

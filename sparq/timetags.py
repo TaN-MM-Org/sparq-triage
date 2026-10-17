@@ -93,7 +93,7 @@ def load_timetags_csv(path, channel_a=0, channel_b=1):
     return t_a, t_b
 
 
-def correlate_start_stop(t_a, t_b, cfg: HBTConfig):
+def correlate_start_stop(t_a, t_b, cfg: HBTConfig) -> np.ndarray:
     """Classic TAC start-stop histogram: first stop per start only.
 
     For each start tag on channel A, the single earliest stop tag on
@@ -103,10 +103,15 @@ def correlate_start_stop(t_a, t_b, cfg: HBTConfig):
     be emulated and compared; FIT THE ALL-PAIRS `correlate` HISTOGRAM,
     which has no pile-up distortion. The tests assert exact agreement
     with `correlate` on streams sparse enough that no window holds
-    two stops, and the elementwise undercount otherwise.
+    two stops, and the elementwise undercount otherwise. Times that are
+    not finite are refused (new in 0.13.0).
     """
     t_a = np.asarray(t_a, dtype=float)
     t_b = np.asarray(t_b, dtype=float)
+    if t_a.ndim != 1 or t_b.ndim != 1:
+        raise ValueError("t_a and t_b must be 1-D arrays of times (ns)")
+    if not (np.all(np.isfinite(t_a)) and np.all(np.isfinite(t_b))):
+        raise ValueError("time tags must be finite")
     if np.any(np.diff(t_a) < 0) or np.any(np.diff(t_b) < 0):
         raise ValueError("timestamp arrays must be sorted ascending")
     hist = np.zeros(cfg.n_bins, dtype=np.float32)
@@ -114,13 +119,12 @@ def correlate_start_stop(t_a, t_b, cfg: HBTConfig):
         return hist
     lo = np.searchsorted(t_b, t_a - cfg.tau_max)
     hi = np.searchsorted(t_b, t_a + cfg.tau_max)
-    first = []
-    for i in range(len(t_a)):
-        if hi[i] > lo[i]:
-            first.append(t_b[lo[i]] - t_a[i])   # earliest stop in window
-    if not first:
+    has = hi > lo
+    if not has.any():
         return hist
-    h, _ = np.histogram(np.asarray(first), bins=cfg.n_bins,
+    # the earliest stop in each start's window (from 0.13.0 without a
+    # Python loop; the same histogram as the 0.12.1 loop, tested)
+    h, _ = np.histogram(t_b[lo[has]] - t_a[has], bins=cfg.n_bins,
                         range=(-cfg.tau_max, cfg.tau_max))
     return h.astype(np.float32)
 

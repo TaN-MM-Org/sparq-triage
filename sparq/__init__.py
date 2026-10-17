@@ -20,6 +20,10 @@ Core, dependency-light API (NumPy/SciPy only) re-exported here:
 * a stationarity check of a series of histograms
   (`check_stationarity`) and the signal fraction from measured counts
   with an interval (`signal_fraction_from_counts`), new in 0.12.0.
+* the saturation curve of an emitter (:mod:`sparq.saturation`:
+  `fit_saturation`, `saturation_curve`, `saturation_from_rates`) and the
+  exact interval and test for the window g2 (`window_g2_ci`,
+  `count_ratio_ci`), new in 0.13.0.
 
 The machine-learning components require PyTorch (install the ``ml``
 extra: ``pip install sparq-triage[ml]``) and are imported explicitly:
@@ -60,7 +64,7 @@ from .analysis import (analyze_histogram, analyze_pulsed,
 from .sequential import SPRTCertifier
 from .datasets import (load_hbt_csv, locate_dip, rebin_real, robust_flat_rate,
                        save_hbt_csv)
-from .bayes import G2Posterior, bayesian_g2
+from .bayes import G2Posterior, bayesian_g2, count_ratio_ci, window_g2_ci
 from .exact import (effective_params, g2_exact, liouvillian, rates_for_params,
                     rates_from_site, steady_state)
 from .pulsed import (calibrate_comb, expected_hist_pulsed, fit_pulsed,
@@ -74,11 +78,13 @@ from .models import (exp_conv_gauss_complex, fit_model, g2_model,
                      goodness_of_fit)
 from .posterior import ModelPosterior, bayesian_g2_model
 from .ptu import load_ptu_timetags, read_ptu, save_ptu_t2
+from .saturation import (fit_saturation, saturation_curve,
+                         saturation_from_rates)
 from .sequential import WindowSPRT, check_stationarity
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.12.1"
+__version__ = "0.13.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
@@ -110,5 +116,7 @@ __all__ = [
     "WindowSPRT",
     "read_ptu", "load_ptu_timetags", "save_ptu_t2",
     "check_stationarity", "signal_fraction_from_counts",
+    "count_ratio_ci", "window_g2_ci",
+    "fit_saturation", "saturation_curve", "saturation_from_rates",
     "__version__",
 ]

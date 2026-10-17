@@ -8,10 +8,10 @@ confidence interval and a single-emitter verdict.
 
 The bootstrap treats the measured counts as the per-bin Poisson means,
 draws B synthetic histograms, re-runs the full pipeline (dip centering,
-re-binning, flat-level normalization, multi-start Levenberg-Marquardt fit)
-on each draw, and reports percentiles of the resulting g2(0) sample.  This
-propagates shot noise through every step of the analysis rather than
-quoting the fit's linearized parameter error.
+re-binning, flat-level normalization, multi-start bounded least-squares
+fit) on each draw, and reports percentiles of the resulting g2(0)
+sample.  This propagates shot noise through every step of the analysis
+rather than quoting the fit's linearized parameter error.
 
 CW histograms go through :func:`analyze_histogram`; pulsed (comb)
 histograms through :func:`analyze_pulsed`, which fits the whole comb
@@ -214,9 +214,11 @@ def fit_g2_histogram(hist, T_s, r_hat, cfg: HBTConfig, starts=None,
                      t2_bounds=DEFAULT_T2_BOUNDS, return_details=False,
                      c0_prior=None, check_bounds=True, var=None):
     """Conventional pipeline: normalize by the singles-rate flat level and
-    LM-fit the three-level model with multiple starts (best practice);
-    returns (g2_0_hat, ok_flag), and with return_details=True also a
-    dict (see below).
+    fit the three-level model by bounded least squares with multiple
+    starts (SciPy's curve_fit, which with bounds uses its trust-region
+    reflective method, not Levenberg-Marquardt as this docstring said up
+    to 0.12.1); returns (g2_0_hat, ok_flag), and with
+    return_details=True also a dict (see below).
 
     t1_bounds / t2_bounds: the (low, high) windows, in ns, that the
     antibunching and bunching times are fitted within.  The defaults are
