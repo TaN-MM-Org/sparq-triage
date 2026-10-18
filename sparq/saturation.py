@@ -114,7 +114,8 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
     Refuses (ValueError): powers or counts that are not finite, negative
     powers, counts that are negative or not whole, non-positive times,
     arrays of different lengths, fewer distinct powers than the curve
-    has parameters plus one, no positive power, no counts, an unknown
+    has parameters plus one, no positive power, no counts, counts at
+    zero power with background="none" (from 0.14.0), an unknown
     `background` or `interval`, and a `level` outside (0, 1).
     """
     from scipy.optimize import brentq, minimize_scalar
@@ -148,6 +149,14 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
         raise ValueError("need at least one positive power")
     if n.sum() <= 0:
         raise ValueError("no counts")
+    if background == "none" and np.any(n[P == 0] > 0):
+        # new in 0.14.0: up to 0.13.0 this gave a fit with an infinite
+        # deviance (R_inf and P_sat meaningless) without intervals, and
+        # a NaN error from inside the interval search with them
+        raise ValueError(
+            "there are counts at zero power, which the curve without "
+            "background (background='none') cannot give; use "
+            "background='constant' or 'linear' (dark counts)")
 
     # columns of the linear part, scaled to unit size so that the Newton
     # steps of the Poisson solver see numbers of one order

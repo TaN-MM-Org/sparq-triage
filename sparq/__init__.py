@@ -24,6 +24,9 @@ Core, dependency-light API (NumPy/SciPy only) re-exported here:
   `fit_saturation`, `saturation_curve`, `saturation_from_rates`) and the
   exact interval and test for the window g2 (`window_g2_ci`,
   `count_ratio_ci`), new in 0.13.0.
+* the excited-state lifetime from a TCSPC decay histogram
+  (:mod:`sparq.lifetime`: `fit_lifetime`, `expected_decay`), new in
+  0.14.0.
 
 The machine-learning components require PyTorch (install the ``ml``
 extra: ``pip install sparq-triage[ml]``) and are imported explicitly:
@@ -71,6 +74,7 @@ from .pulsed import (calibrate_comb, expected_hist_pulsed, fit_pulsed,
                      g2_peak_area, peak_cdf, peak_shape)
 from .heralded import (car_for_purity, heralded_from_car, heralded_g2_limit,
                        heralded_source)
+from .lifetime import expected_decay, fit_lifetime
 from .lab import (assured_acquisition_time, certification_probability,
                   expected_posterior, required_acquisition_time,
                   site_from_numbers)
@@ -84,7 +88,7 @@ from .sequential import WindowSPRT, check_stationarity
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",
@@ -118,5 +122,6 @@ __all__ = [
     "check_stationarity", "signal_fraction_from_counts",
     "count_ratio_ci", "window_g2_ci",
     "fit_saturation", "saturation_curve", "saturation_from_rates",
+    "expected_decay", "fit_lifetime",
     "__version__",
 ]

@@ -238,6 +238,53 @@ def _tag(ident, typ, value, idx=-1):
     raise ValueError(typ)
 
 
+def _t2_records(ch, ticks, family, wrap, many):
+    """The 32-bit T2 records of events (channels, integer ticks) with the
+    overflow records inserted before each event whose tick passes one or
+    more multiples of `wrap` (one record per wrap, or for the types that
+    allow it one record carrying up to 0x1FFFFFF of them).
+
+    From 0.14.0 without a Python loop over the events; the records are
+    the same, word for word, as those of the 0.13.0 loop (the tests
+    compare the files byte for byte)."""
+    q = ticks // wrap                       # whole wraps before each tick
+    n_ofl = np.diff(np.concatenate([[0], q]))
+    if family == "PT":
+        ev = (ch << 28) | (ticks - q * wrap)
+    else:
+        tt = ticks - q * wrap
+        ev = np.where(ch == 0, (1 << 31) | tt, ((ch - 1) << 25) | tt)
+    # overflow records: one per wrap, or, where several may share a
+    # record, n // 0x1FFFFFF full records then one with the rest
+    if many:
+        cap = 0x1FFFFFF
+        n_rec = -(-n_ofl // cap)            # ceil
+    else:
+        n_rec = n_ofl
+    total = int(n_rec.sum())
+    out = np.empty(total + ch.size, dtype=np.int64)
+    # position of each event: after its own overflow records and all
+    # earlier records
+    pos_ev = np.cumsum(n_rec + 1) - 1
+    out[pos_ev] = ev
+    if total:
+        is_ofl = np.ones(out.size, bool)
+        is_ofl[pos_ev] = False
+        if family == "PT":
+            out[is_ofl] = 15 << 28
+        elif not many:
+            out[is_ofl] = (1 << 31) | (63 << 25)
+        else:
+            # the k-th record (k = 0, 1, ...) before an event carries
+            # min(cap, n - k cap) wraps
+            owner = np.repeat(np.arange(ch.size), n_rec)
+            first = np.cumsum(n_rec) - n_rec
+            k = np.arange(total) - np.repeat(first, n_rec)
+            m = np.minimum(cap, n_ofl[owner] - k * cap)
+            out[is_ofl] = (1 << 31) | (63 << 25) | m
+    return out.astype("<u4")
+
+
 def save_ptu_t2(path, channels, times_ns, resolution_s=1e-12,
                 record_type="GenericT2"):
     """Write photon events as a T2-mode PTU file (new in 0.10.0).
@@ -278,26 +325,7 @@ def save_ptu_t2(path, channels, times_ns, resolution_s=1e-12,
             raise ValueError("channels are 0 (sync) to 64")
         wrap, many = (33552000, False) if family == "HH1" else \
             (33554432, True)
-    recs = []
-    base = 0
-    for c, k in zip(ch.tolist(), ticks.tolist()):
-        n_ofl = (k - base) // wrap
-        while n_ofl > 0:
-            m = min(n_ofl, 0x1FFFFFF) if many else 1
-            if family == "PT":
-                recs.append((15 << 28) | 0)           # overflow
-            else:
-                recs.append((1 << 31) | (63 << 25) | (m if many else 0))
-            base += m * wrap
-            n_ofl -= m
-        tt = k - base
-        if family == "PT":
-            recs.append((c << 28) | tt)
-        elif c == 0:
-            recs.append((1 << 31) | (0 << 25) | tt)   # sync event
-        else:
-            recs.append(((c - 1) << 25) | tt)
-    rec = np.array(recs, dtype="<u4")
+    rec = _t2_records(ch, ticks, family, wrap, many)
     head = b"PQTTTR\0\0" + b"1.0.00\0\0"
     head += _tag("File_Comment", "AnsiString",
                  "written by sparq.ptu.save_ptu_t2")

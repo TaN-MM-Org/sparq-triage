@@ -243,6 +243,20 @@ def sample_site(rng, platform="NV", n_probs=(0.42, 0.30, 0.18, 0.10)):
 # Histogram twin (exact Poisson statistics of the HBT histogram)
 # ----------------------------------------------------------------------
 
+_GL4 = None
+
+
+def _gauss_legendre_4():
+    """The 4-point Gauss-Legendre nodes and weights, computed once (from
+    0.14.0; up to 0.13.0 `HBTConfig.bin_nodes` recomputed them on every
+    call, which was a tenth of the time of the planning functions). The
+    same numbers either way: they come from the same NumPy call."""
+    global _GL4
+    if _GL4 is None:
+        _GL4 = np.polynomial.legendre.leggauss(4)
+    return _GL4[0].copy(), _GL4[1].copy()
+
+
 @dataclass
 class HBTConfig:
     """The histogram grid: bins of width 2 tau_max / n_bins from
@@ -278,7 +292,7 @@ class HBTConfig:
         c = self.bin_centers
         if not self.bin_average:
             return c[:, None], np.ones(1)
-        x, wt = np.polynomial.legendre.leggauss(4)
+        x, wt = _gauss_legendre_4()
         half = 0.5 * self.bin_width
         off = np.concatenate([(x - 1.0) * 0.5 * half,      # left half
                               (x + 1.0) * 0.5 * half])     # right half
