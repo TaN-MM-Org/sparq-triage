@@ -7,7 +7,7 @@ numbers, a fixed random seed), fits it with `sparq.fit_saturation`, and
 shows what happens when the powers stay far below saturation.
 
 Run it with `python examples/tutorial_saturation.py`. It printed
-(sparq 0.13.0, Python 3.13, NumPy 2.5.3, SciPy 1.18.1):
+(sparq 0.14.0, Python 3.13, NumPy 2.5.3, SciPy 1.18.1):
 
 R_inf = 849.1 kcps, 95 % interval [843.2, 855.1] (true 850)
 P_sat = 419.0 uW, 95 % interval [415.3, 422.7] (true 420)

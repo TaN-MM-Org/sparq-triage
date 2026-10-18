@@ -11,7 +11,7 @@ window g2, its Bayesian probability, and a model-based interval for
 g2(0) itself.
 
 Run it with `python examples/tutorial_timetags.py`. It printed
-(sparq 0.13.0, Python 3.13, NumPy 2.5.3, SciPy 1.18.1):
+(sparq 0.14.0, Python 3.13, NumPy 2.5.3, SciPy 1.18.1):
 
 399568 + 398752 clicks in 2 s (399.2 kcps counted)
 window g2 = 0.133, exact 95 % interval [0.069, 0.233]; p-value of g2 >= 0.5: 6.6e-09
