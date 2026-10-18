@@ -38,6 +38,8 @@ time stamps, or a PicoQuant PTU file) and answers:
   coincidence-to-accidental ratio allow, with my detectors?
 - How bright does the emitter get, and at what excitation power does it
   saturate?
+- How long does the emitter stay excited (its lifetime), from the
+  photons' delays after the pulses of a pulsed laser?
 
 The analysis core needs only NumPy and SciPy. An optional
 machine-learning layer (PyTorch) holds the neural estimators and the
@@ -55,7 +57,7 @@ reproduces the paper itself.
 - [A short guide to the words used here](#a-short-guide-to-the-words-used-here)
 - [Install, requirements and units](#install-requirements-and-units)
 - [Examples](#examples) (each with the output it prints)
-- [Tutorials](#tutorials) (two worked scripts, from data to a result)
+- [Tutorials](#tutorials) (three worked scripts, from data to a result)
 - [What is in the package](#what-is-in-the-package)
 - [When it refuses, and why](#when-it-refuses-and-why)
 - [How the results are checked](#how-the-results-are-checked)
@@ -170,7 +172,7 @@ Units:
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with sparq-triage 0.13.0 (Python 3.13, NumPy 2.5.3, SciPy
+printed with sparq-triage 0.14.0 (Python 3.13, NumPy 2.5.3, SciPy
 1.18.1). All emitter numbers are illustrative values, not
 measurements. The data are simulated with a fixed random seed, so you
 get the same output. With other NumPy or SciPy versions some printed
@@ -1111,16 +1113,64 @@ counts, for example the zero-delay peak of a pulsed histogram against
 the sum of several side peaks; that ratio includes the background under
 the peaks, which raises it.
 
+### 23. Excited-state lifetime from a TCSPC decay
+
+```python
+import numpy as np
+from sparq import fit_lifetime
+
+# Illustrative TCSPC record: the delays (ns) after the laser pulse of
+# 40 000 photons from an emitter with a 2.5 ns lifetime, 0.1 ns timing
+# jitter and an 80 MHz laser (12.5 ns period), plus 1000 dark counts
+rng = np.random.default_rng(23)
+t = 1.0 + rng.exponential(2.5, 40_000) + rng.normal(0.0, 0.1, 40_000)
+dtime = np.r_[t % 12.5, rng.uniform(0.0, 12.5, 1000)]
+counts, edges = np.histogram(dtime, bins=500, range=(0.0, 12.5))
+delay = 0.5 * (edges[1:] + edges[:-1])          # bin centers, ns
+
+fit = fit_lifetime(delay, counts, t_rep=12.5)
+print(f"lifetime {fit['tau'][0]:.3f} ns, 95 % interval "
+      f"[{fit['tau_lo'][0]:.3f}, {fit['tau_hi'][0]:.3f}]")
+print(f"jitter {fit['sigma_irf']:.3f} ns, decay starts at {fit['t0']:.3f} "
+      f"ns, background {fit['background']:.0f} counts/ns, "
+      f"p-value {fit['p_value']:.2f}")
+```
+
+```
+lifetime 2.466 ns, 95 % interval [2.420, 2.513]
+jitter 0.102 ns, decay starts at 1.002 ns, background 94 counts/ns, p-value 0.89
+```
+
+With a pulsed laser, a TCSPC card (time-correlated single-photon
+counting) times each photon from the laser pulse before it; in T3 mode
+`read_ptu` returns these delays as `dtime`, in units of the resolution
+`resolution_s`. Their histogram is the emitter's decay. `fit_lifetime`
+fits it with an exponential decay blurred by Gaussian timing jitter (the
+instrument response), plus a flat background. With `t_rep` the decays of
+earlier pulses that have not died out by the next pulse are added. Give
+it for pulsed data: a share e^(-t_rep/tau) of each decay is left at the
+next pulse (12 % for a 6 ns lifetime at 80 MHz), and when that share is
+negligible the fits with and without it agree (to 1e-4 for a 0.8 ns
+lifetime at 80 MHz in the tests); the third tutorial shows what goes
+wrong without it. The fit maximizes the Poisson likelihood of the
+counts, and the interval is a profile-likelihood interval.
+`n_components=2` fits two lifetimes; `sigma_irf` and `t0` may be given
+when they are known. A small p-value says that the model does not
+describe the decay, for example a second lifetime or an instrument
+response with a slower tail than a Gaussian. `expected_decay` gives the
+model's mean counts.
+
 ## Tutorials
 
-Two scripts in the [`examples`](examples) folder of the source
-repository go from data to a final result with uncertainties. Each one
-makes its own data with a fixed random seed (illustrative numbers, not
-measurements) and uses only the package. Run them from the repository
-folder, for example `python examples/tutorial_saturation.py`. The output
-below is what they printed with sparq-triage 0.13.0 (Python 3.13, NumPy
-2.5.3, SciPy 1.18.1); each script quotes it at the top, and a test runs
-both scripts and checks their numbers.
+Three scripts in the [`examples`](examples) folder of the source
+repository (and, from 0.14.0, of the source distribution) go from data
+to a final result with uncertainties. Each one makes its own data with a
+fixed random seed (illustrative numbers, not measurements) and uses only
+the package. Run them from the repository folder, for example `python
+examples/tutorial_saturation.py`. The output below is what they printed
+with sparq-triage 0.14.0 (Python 3.13, NumPy 2.5.3, SciPy 1.18.1); each
+script quotes it at the top, and a test runs the scripts and checks
+their numbers.
 
 **Saturation curve** (`examples/tutorial_saturation.py`, about 2 s).
 Counts at 15 powers (one with the laser blocked, for the dark counts)
@@ -1153,6 +1203,30 @@ which lies inside both intervals.
 window g2 = 0.133, exact 95 % interval [0.069, 0.233]; p-value of g2 >= 0.5: 6.6e-09
 Bayesian P[window g2 < 0.5] = 1.000000
 model g2(0) = 0.113, 95 % interval [0.068, 0.162] (true 0.1536)
+```
+
+**Lifetime from a TCSPC decay** (`examples/tutorial_lifetime.py`, about
+6 s of computing time). Photon delays after the pulses of an 80 MHz
+laser are made photon by photon (an exponential decay, Gaussian timing
+jitter, dark counts) and histogrammed in 25 ps bins, as a TCSPC card in
+T3 mode would record them. `fit_lifetime` gives the lifetime with its 95
+% interval, the width of the instrument response and a p-value. A 6 ns
+lifetime leaves 12 % of each decay for the next period; fitted as if
+every decay ended within its period, the lifetime comes out at 4.1 ns
+and the p-value rejects the fit. An emitter with two decays (0.9 ns and
+5 ns) is rejected by the one-lifetime fit, and the two-lifetime fit
+returns both lifetimes with intervals and the share of the photons in
+each. One run is shown: its first p-value, 0.04, is small by chance (in
+40 runs of this kind, done once outside the test suite, 1 fell below
+0.05).
+
+```
+lifetime 5.938 ns, 95 % interval [5.606, 6.225] (true 6); IRF FWHM 276 ps (true 283); p-value 0.04
+without the laser period: lifetime 4.074 ns, p-value 2.8e-09
+one lifetime: 1.159 ns, p-value 1.5e-49
+two lifetimes: 0.924 ns, 95 % interval [0.887, 0.953] (true 0.9), share of photons 0.704
+two lifetimes: 5.821 ns, 95 % interval [4.213, 6.728] (true 5.0), share of photons 0.296
+two lifetimes: p-value 0.02
 ```
 
 ## What is in the package
@@ -1209,6 +1283,9 @@ example) gives its inputs, units and conventions.
 - `fit_saturation`, `saturation_curve`, `saturation_from_rates`: the
   saturation curve: count rate against excitation power, fitted with
   intervals for `R_inf` and `P_sat` (example 21 and the first tutorial).
+- `fit_lifetime`, `expected_decay`: the excited-state lifetime (one or
+  two) from a TCSPC decay histogram, with intervals, and the model's
+  mean counts (example 23 and the third tutorial).
 - `load_timetags_csv`, `save_timetags_csv`, `correlate`,
   `correlate_start_stop`, `normalize_g2` -- time tags to g2
   (example 7). `read_ptu`, `load_ptu_timetags`, `save_ptu_t2` --
@@ -1396,6 +1473,16 @@ explicitly)
   no positive power, no counts, an unknown `background` or `interval`,
   or a `level` outside (0, 1); `saturation_from_rates` rates that are
   not positive (`k_es` may be 0);
+- `fit_saturation` also refuses counts at zero power with
+  `background="none"`, a curve that is 0 there (from 0.14.0);
+- `fit_lifetime` gets delays that are not finite or not strictly
+  increasing or decreasing, fewer than 5 bins (or too few for the
+  parameters), counts that are negative, not finite or all zero, arrays
+  of different lengths, a `t_rep` that is not a positive number, a
+  negative or non-finite `sigma_irf`, a non-finite `t0`, an
+  `n_components` other than 1 or 2, or a `level` outside (0, 1);
+  `expected_decay` lifetimes that are not positive, negative areas or
+  background, or a different number of areas and lifetimes;
 - `window_g2_ci` gets what `bayesian_g2` refuses, counts that are not
   whole, or no counts in either window; `count_ratio_ci` counts that
   are negative or not whole, both counts zero, bin numbers that are not
@@ -1409,7 +1496,7 @@ explicitly)
 
 ## How the results are checked
 
-225 automated tests run on every push to `main` and every pull
+237 automated tests run on every push to `main` and every pull
 request. In CI they run on Python 3.10, 3.11, 3.12, 3.13 and 3.14 with
 CPU PyTorch; once more on Python 3.14 without PyTorch, where the
 machine-learning test files are skipped; and once more on Python 3.10
@@ -1634,7 +1721,12 @@ fixed seeds. The main checks:
   for a T2 record that carries 154 overflows, `ptufile` added 26
   (PicoQuant's demo reader and `phconvert` add all 154), so its T2
   check uses data without such long gaps. Simulated tags through a PTU file give the
-  same histogram within 2 counts per bin.
+  same histogram within 2 counts per bin. From 0.14.0 `save_ptu_t2`
+  writes its records without a Python loop; for every T2 record type,
+  with sync events, gaps of several wrap periods and a gap of more than
+  twice what one overflow record can carry, the records equal those of
+  the 0.13.0 loop exactly (they are whole numbers) and the files are the
+  same byte for byte.
 - `correlate` equals a brute-force count of every pair; start-stop
   never exceeds it; from 0.13.0 `correlate`, `correlate_start_stop` and
   the detectors' dead-time pass equal the 0.12.1 loops count for count
@@ -1673,6 +1765,38 @@ fixed seeds. The main checks:
   300 s histogram `window_g2_ci` and the credible interval of
   `bayesian_g2` agree within 3 %.
 
+**Lifetime fit** (new in 0.14.0)
+
+- The bin integrals of `expected_decay` equal differences of SciPy's
+  `exponnorm` distribution function (an independent implementation of
+  the exponential blurred by a Gaussian) to 1e-12 of the decay's
+  photons, for jitter from 1/2000 to 50 times the lifetime; the
+  distribution function equals the convolution integral, computed by
+  quadrature, to 1e-9. With a laser period, the closed geometric sum
+  over earlier pulses equals the direct sum over the pulses to 1e-12 of
+  the largest bin (lifetimes from a twentieth of the period to more
+  than twice it), and the bins of one period hold exactly one pulse's
+  photons (to 1e-12).
+- `fit_lifetime`: on noise-free histograms built from `exponnorm` it
+  returns the lifetime and the areas to 1e-6 (one lifetime, a lifetime
+  whose decay reaches far into the next periods, two lifetimes, and a
+  single decay without a laser period, also with the jitter and t0
+  given). On a noisy decay an independent Nelder-Mead minimization of
+  the Poisson likelihood finds no better fit, and at both ends of the
+  95 % interval its profile deviance is the chi-square quantile 3.84
+  within 0.01. Of 20 simulated dim decays (about 3100 photons, the
+  jitter given), at least 16 of the 95 % intervals hold the true
+  lifetime. Two lifetimes
+  fitted with one, and an 8 ns lifetime at 80 MHz fitted without the
+  laser period (it comes out below 6 ns), get p-values below 1e-6; a
+  lifetime 100 times longer than the record leaves the upper end of
+  its interval open, and one far shorter than the jitter the lower end,
+  each with a warning. Done once outside the test suite, over 200
+  simulated decays each of a dim emitter (2 ns lifetime, about 3100
+  photons in 125 bins) and of a bright one (6 ns, about 1e5 photons in
+  500 bins, at 80 MHz), the 95 % intervals held the true lifetime in 191
+  and 190 runs; 6.5 % and 3 % of the p-values fell below 0.05.
+
 **Machine learning**
 
 - An untrained convolutional or spiking network has a balanced
@@ -1694,15 +1818,26 @@ fixed seeds. The main checks:
   of a series in synthetic files of its expected layout.
 - The version matches the installed metadata and CITATION.cff; the
   core modules import with PyTorch blocked.
-- Both tutorials run and print the numbers they quote (to 1 %, so that
-  the check also holds with other NumPy and SciPy versions).
+- The three tutorials run and print the numbers they quote (to 1 %, so
+  that the check also holds with other NumPy and SciPy versions).
 
 Not covered by tests: `TriageEnv` with a trained estimator and the
 figures of the manuscript, and `load_fisequr` on the real data set.
 
 ## Corrections in earlier versions
 
-**0.13.0 (this release) corrects these.**
+**0.14.0 (this release) corrects this.**
+
+- **A saturation fit that could not fit.** `fit_saturation` with
+  `background="none"` and counts at zero power (the curve without dark
+  counts is 0 there) returned, without intervals, `R_inf` = 429 and
+  `P_sat` = 0.012 for counts whose fit with dark counts
+  (`background="constant"`) gives 1974 and 190, with an infinite
+  deviance and no explanation; with intervals
+  it stopped with a NaN error from inside the interval search. It now
+  refuses such data and names the cause.
+
+**0.13.0 corrected these.**
 
 - **The pulsed simulator cut its comb short.** `expected_hist_pulsed`
   added up the peaks only to one laser period beyond the recorded
@@ -1915,6 +2050,21 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   intervals (they cover at least as often as the level says), and like
   `bayesian_g2` they are for the window g2, an upper bound on g2(0)
   when the dip is wider than the window.
+- `fit_lifetime` assumes a Gaussian instrument response, decays that
+  are exponential (one or two lifetimes) and a flat background, and
+  Poisson counts. An instrument response with a slower tail than a
+  Gaussian is not described (measure the response on the laser light
+  to see its shape); with enough counts the p-value shows the misfit.
+  High count rates (more than one photon per laser
+  period now and then, detector dead time) distort a TCSPC histogram;
+  this is not modeled. A decay much longer than the period looks flat
+  and is taken for background, and one much shorter than the jitter
+  cannot be told apart from it: the interval is then open on that side
+  and a warning is issued. The decay's rise must be in the record. The
+  search starts from lifetimes between the bin width and the record
+  length (or the period) and is local from there; with two lifetimes
+  the likelihood can have more than one minimum, and a component far
+  outside that range is not looked for.
 - The pulsed comb fit assumes that every peak, the zero-delay one
   included, has the same shape (a two-sided exponential blurred by
   Gaussian jitter) and that the background under the comb is flat;

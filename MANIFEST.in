@@ -1,0 +1,3 @@
+# Ship the worked tutorials with the source distribution, so that
+# tests/test_tutorials.py runs (instead of skipping) from an unpacked sdist.
+graft examples

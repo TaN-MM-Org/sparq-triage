@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.14.0 (2026-10-18)
+
+Fits the excited-state lifetime of an emitter from a TCSPC decay
+histogram with intervals, refuses a saturation fit that could not fit,
+and writes PTU files and evaluates the planning functions faster with
+the same results. A third worked tutorial.
+
+### Added
+
+- `fit_lifetime` and `expected_decay` (new module `sparq.lifetime`,
+  exported from `sparq`): the decay of a TCSPC histogram (the photons'
+  delays after the laser pulse, for example the T3 `dtime` of
+  `read_ptu`), modeled as one or two exponential decays blurred by
+  Gaussian timing jitter (the instrument response) plus a flat
+  background. Each bin's share of a decay is a difference of the
+  closed-form distribution function at its edges (no midpoint rule),
+  evaluated with the scaled complementary error function. With the
+  laser period `t_rep` the decays of earlier pulses that have not died
+  out are added: the terms in which the jitter matters one by one, the
+  rest as a geometric series in closed form. The counts are fitted by
+  their Poisson likelihood (the areas and the background exactly, by
+  an active-set Newton method, for each shape; t0, the jitter and the
+  lifetimes by a bounded quasi-Newton search), with profile-likelihood
+  intervals for each lifetime, the share of the photons in each
+  component, and a goodness-of-fit p-value (the exact deviance moments
+  of `fit_pulsed`). `sigma_irf` and `t0` may be given. A lifetime the
+  data do not bound (much longer than the record or much shorter than
+  the jitter) gets an open interval end (NaN above, 0 below),
+  `resolved` False and a RuntimeWarning. No literature value is used;
+  the model is checked against SciPy's independent `exponnorm` (1e-12),
+  the convolution integral by quadrature (1e-9) and a direct sum over
+  the pulses back to where less than 1e-18 of a decay is left (1e-12). The fit recovers the parameters of noise-free
+  histograms to 1e-6; an independent Nelder-Mead minimization finds no
+  better fit, and the profile deviance at both ends of the interval is
+  3.84 within 0.01; at least 16 of 20 simulated 95 % intervals hold the
+  truth (done once outside the suite: 191 and 190 of 200, for a dim
+  and a bright emitter); two lifetimes fitted with one, and a long
+  lifetime fitted without the laser period, get p < 1e-6. README
+  example 23.
+- `examples/tutorial_lifetime.py` (see Tutorials).
+
+### Fixed
+
+- `fit_saturation` with `background="none"` and counts at zero power,
+  where that curve is 0: without intervals it returned R_inf = 429 and
+  P_sat = 0.012 with an infinite deviance (the fit with dark counts,
+  `background="constant"`, gives 1974 and 190), and with intervals it
+  stopped with "The function value at x=4.292044655985884e-07 is NaN;
+  solver cannot continue." from inside brentq. Such data are now refused with a
+  ValueError that names the cause (test
+  `test_saturation_without_background_refuses_counts_at_zero_power`).
+
+### Performance
+
+Measured on this machine (2 CPUs shared with other jobs), median of
+seven interleaved runs of the old and the new code:
+
+- `save_ptu_t2`: the records are formed without a Python loop over the
+  events: 1119 ms -> 222 ms (5.0 times) for the 798 320 clicks of the
+  time-tag tutorial. The records are whole numbers and equal those of
+  the 0.13.0 loop exactly; the test keeps that loop and compares the
+  records and the whole file byte for byte (every T2 record type, sync
+  events, gaps of many wrap periods).
+- `HBTConfig.bin_nodes`: the 4-point Gauss-Legendre nodes are computed
+  once instead of on every call (the same NumPy call, so the same
+  numbers; tested exactly): 200 calls of `expected_histogram`
+  500 ms -> 309 ms (1.6 times); `certification_probability`, which
+  calls it once per evaluation, 220 ms -> 178 ms for 20 calls
+  (1.2 times; the probabilities are the same).
+
+### Changed
+
+- `fit_saturation` refuses counts at zero power with
+  `background="none"` (see Fixed).
+- Tutorials: the outputs quoted in `tutorial_saturation.py` and
+  `tutorial_timetags.py` are what 0.14.0 prints (unchanged from
+  0.13.0); the docstrings now name 0.14.0.
+- Packaging: a new `MANIFEST.in` puts `examples/` into the source
+  distribution, so that `tests/test_tutorials.py` runs the tutorials
+  from an unpacked sdist instead of skipping them. The wheel is
+  unchanged; building needs nothing new.
+- Type hints on the new public functions.
+
+### Tutorials
+
+- `examples/tutorial_lifetime.py` (about 6 s of computing time): photon
+  delays after the pulses of an 80 MHz laser, made photon by photon,
+  histogrammed in 25 ps bins and fitted: a 6 ns lifetime with its 95 %
+  interval and the width of the instrument response; the same data
+  fitted without the laser period (the lifetime comes out at 4.1 ns,
+  p = 2.8e-9); and an emitter with two lifetimes, rejected by the
+  one-lifetime fit and resolved by the two-lifetime fit. Its printed
+  output is quoted at the top of the script and in the README;
+  `tests/test_tutorials.py` runs it and checks the numbers (to 1 %).
+
+### Tests
+
+- 237 tests (225 before): test_release_014 (11) and test_tutorials (one
+  more). test_metadata also imports `sparq.lifetime` with PyTorch
+  blocked.
+
 ## 0.13.0 (2026-10-17)
 
 Fits the saturation curve of an emitter with intervals, adds an exact
