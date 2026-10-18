@@ -49,6 +49,7 @@ def _check(path):
 
 @pytest.mark.skipif(not EXAMPLES.is_dir(), reason="examples/ not present")
 @pytest.mark.parametrize("name", ["tutorial_saturation.py",
-                                  "tutorial_timetags.py"])
+                                  "tutorial_timetags.py",
+                                  "tutorial_lifetime.py"])
 def test_tutorial_runs_and_prints_the_quoted_numbers(name):
     _check(EXAMPLES / name)

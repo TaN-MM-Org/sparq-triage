@@ -30,7 +30,7 @@ def test_core_import_is_torch_free():
         for mod in ("sparq.physics", "sparq.exact", "sparq.pulsed",
                     "sparq.models", "sparq.posterior", "sparq.ptu",
                     "sparq.lab", "sparq.sequential", "sparq.heralded",
-                    "sparq.saturation"):
+                    "sparq.saturation", "sparq.lifetime"):
             importlib.reload(importlib.import_module(mod))
     finally:
         del sys.modules["torch"]
