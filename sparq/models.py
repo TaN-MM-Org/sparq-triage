@@ -38,7 +38,8 @@ Models (each a function of named parameters in ns or 1/ns returning
 
 `fit_model` fits any of them by the exact Poisson likelihood, and
 reports the Poisson deviance with its chi-square p-value and, on
-request, a parametric-bootstrap p-value (`goodness_of_fit`). A small
+request, a parametric-bootstrap p-value (`goodness_of_fit`) and (new in
+0.15.0, `level`) a profile-likelihood interval for g2(0). A small
 p-value says the model does not describe the dip; the tests check
 that the p-values are uniform when the model is right and tiny when a
 coherently driven emitter is fitted with the three-level formula.
@@ -219,7 +220,7 @@ def _poisson_deviance(h, mu):
 def fit_model(hist, T_s: float, r_hat: float,
               cfg: HBTConfig | None = None, model: str = "three_level",
               starts=None, fixed=None, c0_prior=None,
-              n_shoulders: int = 1) -> dict:
+              n_shoulders: int = 1, level: float | None = None) -> dict:
     """Fit a dip model to a histogram on the grid `cfg` by the exact
     Poisson likelihood.
 
@@ -238,21 +239,38 @@ def fit_model(hist, T_s: float, r_hat: float,
         gamma_deph=0.0 for "coherent").
     c0_prior : optional (mean, sd) Gaussian constraint on the flat-level
         scale c0, as in `profile_likelihood_ci`.
+    level : confidence level of a profile-likelihood interval for g2(0)
+        (new in 0.15.0; None, the default, gives none). The interval is
+        where the profile deviance 2 [NLL(g2) - NLL_min], with every
+        other parameter (the model's and c0) fitted again at each g2,
+        stays below the chi-square(1) quantile of `level` (Wilks), within
+        0 <= g2(0) <= 1. It belongs to the chosen model: for a model that
+        the p-value rejects it means little. The profile is searched
+        outward from the best fit, each point started from its
+        neighbor, and each end refined by brentq to 1e-4. If the profile
+        finds a lower NLL than the fit (the local search had stopped
+        short), the ends are measured from that lower value and
+        `profile_improved` is True.
 
     All free model parameters are positive and fitted on a log scale;
     rho2 lies in [0, 1] and c0 in [1e-3, 1e3]. The fit is a local
-    search (L-BFGS-B from the starts) and can stop short of the best
-    fit when the model fits badly, in a way that depends on the SciPy
-    version: for the three-level fit of README example 10 the deviance
-    is 350.16 with SciPy 1.18 and 345.75 with SciPy 1.10 (p-values
-    8.3e-11 and 2.2e-10; both reject the model).
+    search (L-BFGS-B from the starts) of half the Poisson deviance (from
+    0.15.0; up to 0.14.0 of a number of the order of the total counts,
+    on which the search could stop short of the best fit). When the
+    model fits badly its likelihood has several minima, and which one
+    the search ends in depends on the SciPy version: for the three-level
+    fit of README example 10 the deviance is 345.74 with SciPy 1.18 and
+    348.81 with SciPy 1.10 (p-values 2.2e-10 and 1.1e-10; both reject
+    the model).
 
     Returns a dict: model, params (the model's), rho2, c0, g2_0
     (= 1 - rho2), mu (the fitted mean counts), deviance (Poisson),
     dof (bins minus free parameters), p_value (the chi-square tail
     probability of the deviance: approximate, good when bins hold more
     than a few counts; see `goodness_of_fit` for an exact-by-simulation
-    version), aic, n_free, ok.
+    version), aic, n_free, ok; with `level` also g2_0_lo, g2_0_hi (0 or
+    NaN, respectively, when the interval reaches 0 or does not close
+    below 1), level and profile_improved.
     """
     if cfg is None:
         cfg = HBTConfig()
@@ -266,6 +284,13 @@ def fit_model(hist, T_s: float, r_hat: float,
         raise ValueError("r_hat and T_s must be positive and finite")
     if model not in MODELS:
         raise ValueError(f"unknown model {model!r}")
+    if level is not None:
+        try:
+            level = float(level)
+        except (TypeError, ValueError):
+            raise ValueError("level must be a number in (0, 1)") from None
+        if not (0.0 < level < 1.0):
+            raise ValueError(f"level must lie in (0, 1); got {level}")
     fixed = dict(fixed or {})
     if model == "multi_exponential":
         names = ["tau1"]
@@ -316,6 +341,16 @@ def fit_model(hist, T_s: float, r_hat: float,
             raise ValueError("c0_prior must be (mean, sd), both positive "
                              "and finite")
 
+    # sum(h log h - h): adding it makes the objective half the Poisson
+    # deviance (plus the c0 prior term), a number of the order of the
+    # bins instead of the total counts, so that the optimizer's relative
+    # stopping rule acts on the differences that matter (from 0.15.0, as
+    # `profile_likelihood_ci` from 0.12.0; up to 0.14.0 the fit could stop
+    # short of its best point, by 0.05 in deviance and 0.002 in g2(0) in
+    # the tests, and by an amount that depended on the SciPy version)
+    pos = h > 0
+    nll_off = float(np.sum(h[pos] * np.log(h[pos])) - h.sum())
+
     def nll(x):
         rho2, lc0 = x[0], x[1]
         p = params_of(x)
@@ -325,7 +360,7 @@ def fit_model(hist, T_s: float, r_hat: float,
         mu = flat * np.exp(lc0) * (1.0 + rho2 * d)
         if np.any(mu <= 0) or not np.all(np.isfinite(mu)):
             return 1e300
-        v = float(np.sum(mu - h * np.log(mu)))
+        v = float(np.sum(mu - h * np.log(mu))) + nll_off
         if c0_prior is not None:
             v += 0.5 * ((np.exp(lc0) - c0_m) / c0_sd) ** 2
         return v
@@ -352,15 +387,100 @@ def fit_model(hist, T_s: float, r_hat: float,
     dev = _poisson_deviance(h, mu)
     n_free = 2 + len(free)
     dof = int(h.size - n_free)
-    return dict(model=model, params=p, rho2=float(x[0]),
-                c0=float(np.exp(x[1])), g2_0=float(1.0 - x[0]), mu=mu,
-                deviance=dev, dof=dof,
-                p_value=float(_chi2.sf(dev, dof)) if dof > 0 else np.nan,
-                aic=float(2 * best.fun + 2 * n_free), n_free=n_free,
-                ok=True, _fit_args=dict(T_s=T_s, r_hat=r_hat, cfg=cfg,
-                                        model=model, fixed=fixed,
-                                        c0_prior=c0_prior,
-                                        n_shoulders=n_shoulders))
+    out = dict(model=model, params=p, rho2=float(x[0]),
+               c0=float(np.exp(x[1])), g2_0=float(1.0 - x[0]), mu=mu,
+               deviance=dev, dof=dof,
+               p_value=float(_chi2.sf(dev, dof)) if dof > 0 else np.nan,
+               aic=float(2 * (best.fun - nll_off) + 2 * n_free),
+               n_free=n_free,
+               ok=True, _fit_args=dict(T_s=T_s, r_hat=r_hat, cfg=cfg,
+                                       model=model, fixed=fixed,
+                                       c0_prior=c0_prior,
+                                       n_shoulders=n_shoulders))
+    if level is not None:
+        lo, hi, improved = _profile_interval(nll, x, float(best.fun),
+                                             bounds[1:], level)
+        out.update(g2_0_lo=lo, g2_0_hi=hi, level=level,
+                   profile_improved=improved)
+    return out
+
+
+def _profile_interval(nll, x_hat, f_hat, bounds, level):
+    """Profile-likelihood interval for g2(0) = 1 - x[0] of `fit_model`
+    (new in 0.15.0): nll(x) with x = (rho2, log c0, log params...), the
+    best fit x_hat with value f_hat, and the bounds of x[1:].
+
+    From g2_hat the profile is followed outward in steps that start at
+    0.01 and grow by half each time, every point minimized over x[1:]
+    from the solution at its inner neighbor; the first point beyond the
+    chi-square quantile brackets the end, which brentq refines (each
+    evaluation again started from the inner neighbor). The ends are
+    measured from the smallest NLL seen, so a profile that finds a better
+    fit than the local search did moves them. Returns (lo, hi, improved):
+    lo is 0 when the interval reaches g2 = 0, hi NaN when it does not
+    close below g2 = 1."""
+    from scipy.optimize import brentq
+    crit = float(_chi2.ppf(level, 1))
+    g_hat = float(1.0 - x_hat[0])
+    known = {g_hat: (f_hat, np.asarray(x_hat[1:], dtype=float))}
+
+    def prof(g, start):
+        g = float(g)
+        if g in known:
+            return known[g][0]
+        res = minimize(lambda y: nll(np.r_[1.0 - g, y]), start,
+                       method="L-BFGS-B", bounds=bounds)
+        y, v = res.x, float(res.fun)
+        if not np.isfinite(v):
+            v = 1e300
+        known[g] = (v, y)
+        return v
+
+    def walk(sign):
+        """The profile outward from g_hat on one side: returns the inner
+        and outer ends of the bracket of the crossing (None when the
+        profile stays below the quantile up to the edge of [0, 1])."""
+        g_in, step = g_hat, 0.01
+        edge = 0.0 if sign < 0 else 1.0
+        while True:
+            g_out = g_in + sign * step
+            if (g_out - edge) * sign >= 0.0:
+                g_out = edge
+            v = prof(g_out, known[g_in][1])
+            if 2.0 * (v - f_ref[0]) > crit:
+                return g_in, g_out
+            if g_out == edge:
+                return None
+            g_in, step = g_out, 1.5 * step
+
+    f_ref = [f_hat]
+    brackets = {}
+    for sign in (-1.0, 1.0):
+        brackets[sign] = walk(sign)
+    f_low = min(v for v, _ in known.values())
+    improved = f_low < f_hat - 1e-4
+    if improved:
+        # a better fit turned up: walk again from the profile's minimum
+        f_ref[0] = f_low
+        g_best = min(known, key=lambda q: known[q][0])
+        g_hat = g_best
+        for sign in (-1.0, 1.0):
+            brackets[sign] = walk(sign)
+    ends = {}
+    for sign in (-1.0, 1.0):
+        b = brackets[sign]
+        if b is None:
+            ends[sign] = 0.0 if sign < 0 else float("nan")
+            continue
+        g_in, g_out = b
+        start = known[g_in][1]
+
+        def excess(g, start=start):
+            return 2.0 * (prof(g, start) - f_ref[0]) - crit
+
+        lo_g, hi_g = sorted((g_in, g_out))
+        ends[sign] = float(brentq(excess, lo_g, hi_g, xtol=1e-4))
+    return ends[-1.0], ends[1.0], bool(improved)
 
 
 def goodness_of_fit(fit, n_boot=200, seed=0):

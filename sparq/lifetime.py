@@ -47,11 +47,31 @@ maximizes the Poisson likelihood of the counts: for given t0, sigma
 and lifetimes the A_j and B enter linearly and are found exactly (a
 convex problem), so only t0, sigma and the lifetimes are searched.
 
-What the model leaves out: an instrument response that is not
-Gaussian (for example one with a slower tail), and the distortions of
-high count rates (more than one photon per laser period, detector dead
-time). The fit's p-value shows when the model does not describe the
-data.
+A measured instrument response (new in 0.15.0). A Gaussian does not
+describe every response: many detectors add a slower tail. With `irf`,
+the counts of a measured response on the same bins (for example of the
+laser light scattered into the detector) replace the Gaussian. Each of
+its bins is taken to hold its counts spread evenly over the bin; the
+delay of a photon is then a time drawn from the response plus the
+exponential, and a decay bin's share of the photons excited in a
+response bin j is
+    [Psi(x + w) - 2 Psi(x) + Psi(x - w)] / w,
+    Psi(x) = int_0^x (1 - e^(-z/tau)) dz = x - tau (1 - e^(-x/tau))
+    (x > 0; 0 otherwise),
+with w the bin width and x the start of the decay bin minus the start
+of the (shifted) response bin. Every bin of the decay is a sum of these
+over the response bins (a convolution); with t_rep the pulses whose
+response ends before the record begins add a geometric series, summed
+in closed form. The tests check these shares against the convolution
+integral computed by quadrature (1e-12), against a direct sum over the
+pulses (1e-12), and against the Gaussian model of 0.14.0 for a finely
+binned Gaussian response (the difference falls with the square of the
+bin width).
+
+What the model leaves out: the distortions of high count rates (more
+than one photon per laser period, detector dead time) and, with a
+measured response, its own counting noise and its shape within a bin.
+The fit's p-value shows when the model does not describe the data.
 """
 from __future__ import annotations
 
@@ -137,6 +157,120 @@ def _shares(edges, t0, tau, s, t_rep):
             out += (np.exp(0.5 * k * k - xa / tau) * -np.expm1(-w / tau)
                     / -np.expm1(-T / tau))
     return out
+
+
+# ----------------------------------------------------------------------
+# a measured instrument response (new in 0.15.0)
+# ----------------------------------------------------------------------
+
+def _psi(x, tau):
+    """int_0^x F(z) dz for the exponential distribution function
+    F(z) = 1 - e^(-z/tau) (0 for x <= 0): tau (z - 1 + e^-z), z = x/tau,
+    with the series z^2/2 - z^3/6 + ... below z = 0.01, where the closed
+    form would lose digits."""
+    z = np.maximum(np.asarray(x, dtype=float), 0.0) / tau
+    out = np.expm1(-z) + z
+    small = z < 0.01
+    if np.any(small):
+        zs = z[small]
+        s = np.zeros(zs.shape)
+        for k in range(9, 1, -1):          # z^2/2! - z^3/3! + ... + z^9/9!
+            s = zs * (s + (-1.0) ** k / _FACT[k])
+        out[small] = s * zs
+    return tau * out
+
+
+_FACT = [1.0]
+for _k in range(1, 12):
+    _FACT.append(_FACT[-1] * _k)
+
+
+def _irf_kernel(n, w, shift, tau):
+    """beta(k), k = -(n-1) ... n-1: the share in decay bin i = j + k of
+    the photons of a decay (lifetime tau) excited at a time spread evenly
+    over response bin j shifted by `shift`; bins of width w. With
+    x = k w - shift (the start of the decay bin minus the start of the
+    shifted response bin),
+        beta = [Psi(x + w) - 2 Psi(x) + Psi(x - w)] / w,
+    the second difference of `_psi`; where x >= w (the response bin ends
+    before the decay bin starts) it is written as the product
+        tau e^(-(x - w)/tau) (1 - e^(-w/tau))^2 / w,
+    which keeps its precision far from the response."""
+    k = np.arange(-(n - 1), n, dtype=float)
+    x = k * w - shift
+    out = np.empty(k.size)
+    sep = x >= w
+    E = -np.expm1(-w / tau)
+    with np.errstate(under="ignore"):
+        out[sep] = tau * np.exp(-(x[sep] - w) / tau) * E * E / w
+    xs = x[~sep]
+    out[~sep] = (_psi(xs + w, tau) - 2.0 * _psi(xs, tau)
+                 + _psi(xs - w, tau)) / w
+    return np.maximum(out, 0.0)
+
+
+def _irf_shares(w, q, shift, tau, t_rep):
+    """Share of one pulse's decay in each of the n = q.size bins of width
+    w, for the instrument response q (weights summing to
+    1, each spread evenly over its bin, the bins the same as the decay's)
+    shifted by `shift`; with t_rep the decays of all other pulses are
+    added. The pulses whose response ends before the record begins form
+    a geometric series, summed in closed form; the others are summed
+    one by one (a convolution with `_irf_kernel` each)."""
+    n = q.size
+
+    def one(s):
+        return np.convolve(q, _irf_kernel(n, w, s, tau))[n - 1:2 * n - 1]
+
+    if t_rep is None:
+        return one(shift)
+    T = float(t_rep)
+    span = n * w
+    # pulse m (response at its bins shifted by shift - m T) reaches the
+    # record when m > (shift - span) / T; from m_g on its response ends
+    # before every decay bin starts
+    m_lo = int(np.floor((shift - span) / T)) + 1
+    m_g = max(m_lo, int(np.ceil((span + shift) / T)))
+    out = np.zeros(n)
+    for m in range(m_lo, m_g):
+        out += one(shift - m * T)
+    # m >= m_g: sum_j q_j tau E^2/w e^(-((i - j - 1) w - shift + m T)/tau)
+    # summed over m; both exponents below are >= 0
+    E = -np.expm1(-w / tau)
+    j = np.arange(n)
+    i = np.arange(n)
+    with np.errstate(under="ignore"):
+        inner = float(q @ np.exp(-((-j - 1) * w - shift + m_g * T) / tau))
+        out += (tau * E * E / w) * np.exp(-i * w / tau) * inner \
+            / -np.expm1(-T / tau)
+    return out
+
+
+def _check_irf(irf, n, flipped):
+    """The measured response as weights summing to 1 (in the order of the
+    increasing delays)."""
+    q = np.asarray(irf, dtype=float)
+    if q.ndim != 1 or q.size != n:
+        raise ValueError(f"irf must hold one count per bin ({n}), on the "
+                         "same delays as the decay")
+    if not np.all(np.isfinite(q)) or np.any(q < 0):
+        raise ValueError("irf must be finite and non-negative (subtract "
+                         "its background and set negative bins to 0)")
+    if q.sum() <= 0:
+        raise ValueError("irf holds no counts")
+    if flipped:
+        q = q[::-1]
+    return q / q.sum()
+
+
+def _uniform_width(edges):
+    """The width of equal bins; refuses unequal ones."""
+    w = np.diff(edges)
+    wm = float(np.mean(w))
+    if np.max(np.abs(w - wm)) > 1e-6 * wm:
+        raise ValueError("a measured instrument response needs bins of "
+                         "equal width")
+    return wm
 
 
 def _poisson_nnls(X, h, beta0):
@@ -264,7 +398,7 @@ def _check_t_rep(t_rep):
 
 def expected_decay(delay, area, tau, t0: float, sigma_irf: float = 0.0,
                    t_rep: float | None = None,
-                   background: float = 0.0) -> np.ndarray:
+                   background: float = 0.0, irf=None) -> np.ndarray:
     """Mean counts per bin of a TCSPC decay histogram (new in 0.14.0).
 
     delay : bin centers in ns (strictly increasing or decreasing; the bin
@@ -272,12 +406,22 @@ def expected_decay(delay, area, tau, t0: float, sigma_irf: float = 0.0,
     area : photons of the decay (one number, or one per component): per
         laser period with `t_rep`, in the whole decay without.
     tau : lifetime(s) in ns, as many as `area`.
-    t0 : delay at which the decay starts (ns).
+    t0 : delay at which the decay starts (ns); with `irf`, the shift of
+        the measured response instead (0: as measured).
     sigma_irf : standard deviation of the Gaussian instrument response
         (ns; 0 for none).
     t_rep : laser period (ns); with it the decays of earlier (and later)
         pulses are added, without it the histogram holds one decay.
     background : flat background in counts per ns of delay.
+    irf : a measured instrument response (new in 0.15.0): its counts on
+        the same bins as the decay, for example a histogram of the laser
+        light scattered into the detector, with its own background
+        subtracted. The decay is then the exponential convolved with this
+        response, shifted by t0, instead of with a Gaussian (sigma_irf
+        must be 0). The response's counts in each bin are taken to be
+        spread evenly over the bin, and each bin's share of the decay is
+        then a closed form (see `fit_lifetime`). The bins must have equal
+        widths.
 
     Returns the mean counts of each bin (in the order of `delay`).
     """
@@ -302,6 +446,15 @@ def expected_decay(delay, area, tau, t0: float, sigma_irf: float = 0.0,
     T = _check_t_rep(t_rep)
     edges = _edges_from_centers(d)
     mu = bg * np.diff(edges)
+    if irf is not None:
+        if s != 0.0:
+            raise ValueError("give sigma_irf (a Gaussian response) or irf "
+                             "(a measured one), not both")
+        q = _check_irf(irf, d.size, flipped)
+        w = _uniform_width(edges)
+        for a, ta in zip(A, taus):
+            mu = mu + a * _irf_shares(w, q, t0, float(ta), T)
+        return mu[::-1] if flipped else mu
     for a, ta in zip(A, taus):
         mu = mu + a * _shares(edges, t0, float(ta), s, T)
     return mu[::-1] if flipped else mu
@@ -310,7 +463,7 @@ def expected_decay(delay, area, tau, t0: float, sigma_irf: float = 0.0,
 def fit_lifetime(delay, counts, t_rep: float | None = None,
                  n_components: int = 1, sigma_irf: float | None = None,
                  t0: float | None = None, level: float = 0.95,
-                 interval: bool = True) -> dict:
+                 interval: bool = True, irf=None) -> dict:
     """Fit the decay of a TCSPC histogram: lifetime(s) with
     profile-likelihood intervals (new in 0.14.0).
 
@@ -335,6 +488,22 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
         otherwise.
     level : confidence level of the intervals.
     interval : False skips the intervals.
+    irf : a measured instrument response (new in 0.15.0): its counts on
+        the same (equal) bins as the decay, for example a histogram of the
+        laser light scattered into the detector, recorded with the same
+        settings, with its own background subtracted. The decay is then
+        fitted as the exponential(s) convolved with this response (the
+        usual "reconvolution" fit), so a response of any shape, such as
+        one with a slow tail, is described. Its counts in each bin are
+        taken to be spread evenly over the bin, and each bin's share of
+        the decay is then a closed form (an error of second order in the
+        bin width against the true shape of the response); with `t_rep`
+        the pulses whose response ends before the record are summed as a
+        geometric series. `t0` is then the shift of the response (0: as
+        measured), fitted unless given; `sigma_irf` must not be given and
+        is returned as NaN. The response's own counting noise is not
+        included in the intervals: record it with many more counts than
+        the decay.
 
     The search starts from a scan of lifetimes between the bin width
     and the record length (or the period, if longer) and is local from
@@ -358,7 +527,7 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
     moments of each bin's Poisson deviance, as in `fit_pulsed`; a small
     value says the model does not describe the decay, for example a
     second lifetime or an instrument response with a slower tail than
-    a Gaussian),
+    a Gaussian; give `irf` for such a response),
     at_bound (searched parameters that ended on a search limit), level,
     resolved (None without intervals) and ok.
 
@@ -367,7 +536,10 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
     finite or all zero, arrays of different lengths, too few bins for
     the parameters, a t_rep, sigma_irf or t0 that is not a finite
     number (t_rep must be positive, sigma_irf at least 0), an
-    n_components other than 1 or 2 and a level outside (0, 1).
+    n_components other than 1 or 2 and a level outside (0, 1); with
+    `irf` (from 0.15.0) also a response of another length, with negative
+    or non-finite counts or none, `sigma_irf` given as well, and bins of
+    unequal width.
     """
     from scipy.optimize import brentq, minimize
     from scipy.stats import chi2
@@ -399,11 +571,19 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
     edges = _edges_from_centers(d)
     width = np.diff(edges)
     span = float(edges[-1] - edges[0])
+    use_irf = irf is not None
+    if use_irf:
+        if sigma_irf is not None:
+            raise ValueError("give sigma_irf (a Gaussian response) or irf "
+                             "(a measured one), not both")
+        q_irf = _check_irf(irf, h.size, flipped)
+        w_irf = _uniform_width(edges)
+        s_fix = 0.0
     names = []
     if t0 is None:
         names.append("t0")
     names += [f"tau{j + 1}" for j in range(nc)]
-    if sigma_irf is None:
+    if sigma_irf is None and not use_irf:
         names.append("sigma_irf")
     n_lin = nc + 1
     if h.size <= n_lin + len(names) + 1:
@@ -417,7 +597,11 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
     tau_hi_b = 1e3 * max(span, T or 0.0)
     lo_b, hi_b = [], []
     for n in names:
-        if n == "t0":
+        if n == "t0" and use_irf:          # the shift of the response
+            half = 0.5 * T if T is not None else 0.25 * span
+            lo_b.append(-half)
+            hi_b.append(half)
+        elif n == "t0":
             half = 0.5 * T if T is not None else span
             lo_b.append(c_peak - half)
             hi_b.append(c_peak + (0.5 * T if T is not None else
@@ -441,7 +625,10 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
 
     def columns(th):
         c, taus, s = unpack(th)
-        cols = [_shares(edges, c, ta, s, T) for ta in taus]
+        if use_irf:
+            cols = [_irf_shares(w_irf, q_irf, c, ta, T) for ta in taus]
+        else:
+            cols = [_shares(edges, c, ta, s, T) for ta in taus]
         cols.append(width.copy())
         return np.column_stack(cols)
 
@@ -493,18 +680,28 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
     w_min = float(np.min(width))
     tau_scan = np.geomspace(max(w_min, 2e-3), max(span, T or 0.0), 8)
     s_scan = (np.geomspace(max(0.5 * w_min, 2e-4), 0.05 * span, 3)
-              if sigma_irf is None else [None])
+              if sigma_irf is None and not use_irf else [None])
+    if use_irf:
+        # the response as measured, and shifted so that its peak falls
+        # on the decay's
+        i_pk = int(np.argmax(np.convolve(q_irf, np.ones(3) / 3.0,
+                                         mode="same")))
+        t0_starts = sorted({0.0, float(c_peak - d[i_pk])})
+    else:
+        t0_starts = [None]
     if nc == 1:
         tau_sets = [(t,) for t in tau_scan]
     else:
         tau_sets = [(a, b) for i, a in enumerate(tau_scan)
                     for b in tau_scan[i + 1:]]
     scan = []
-    for s0 in s_scan:
+    for s0, t0s in [(a, b) for a in s_scan for b in t0_starts]:
         for ts in tau_sets:
             x0 = []
             for n in names:
-                if n == "t0":
+                if n == "t0" and use_irf:
+                    x0.append(t0s)
+                elif n == "t0":
                     x0.append(c_peak - (s0 if s0 is not None else s_fix))
                 elif n == "sigma_irf":
                     x0.append(np.log(s0))
@@ -548,7 +745,7 @@ def fit_lifetime(delay, counts, t_rep: float | None = None,
                area=areas[order],
                fraction=(areas[order] / tot if tot > 0
                          else np.full(nc, np.nan)),
-               t0=float(c), sigma_irf=float(s),
+               t0=float(c), sigma_irf=np.nan if use_irf else float(s),
                background=float(beta[-1]),
                mu=mu[::-1] if flipped else mu, deviance=float(dev),
                dof=dof,

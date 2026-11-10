@@ -82,6 +82,20 @@ def _check_hist_inputs(hist, T_s, r_hat, cfg):
     return h
 
 
+def _check_ci(ci):
+    """The bootstrap level must lie in (0, 1) (new in 0.15.0). Up to
+    0.14.0 it was not checked: ci = 0.0 gave an interval of zero width,
+    and a negative ci an interval whose low end was above its high end,
+    without a word; ci = 95 (a percentage) failed inside NumPy."""
+    try:
+        c = float(ci)
+    except (TypeError, ValueError):
+        raise ValueError("ci must be a number in (0, 1)") from None
+    if not (0.0 < c < 1.0):
+        raise ValueError(f"ci must lie in (0, 1) (for example 0.68 or "
+                         f"0.95, not a percentage); got {ci!r}")
+
+
 def _near(x, bound, rtol=1e-3):
     return abs(np.log(x) - np.log(bound)) < rtol
 
@@ -460,6 +474,8 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
     if not T_ok:
         raise ValueError(f"T_s must be a positive acquisition time in "
                          f"seconds; got {T_s!r}")
+    if n_bootstrap and n_bootstrap > 0:
+        _check_ci(ci)
     r_singles, c0_prior = None, None
     if singles_cps is not None:
         sc = np.atleast_1d(np.asarray(singles_cps, dtype=float))
@@ -617,6 +633,12 @@ def analyze_pulsed(delay, counts, t_rep: float = T_REP_NS,
             or sigma_pair is not None:
         raise ValueError("envelope, T_s, singles_cps and sigma_pair are "
                          "options of method='fit'")
+    if n_bootstrap and n_bootstrap > 0:
+        _check_ci(ci)
+    if delay.size > 1 and np.all(np.diff(delay) < 0):
+        # a decreasing delay axis (new in 0.15.0; up to 0.14.0 it failed
+        # with "attempt to get argmin of an empty sequence")
+        delay, counts = delay[::-1], counts[::-1]
     center, phase, period = calibrate_comb(delay, counts, t_rep=t_rep)
     g2_0 = g2_peak_area(delay, counts, center, t_rep=t_rep)
     out = dict(g2_0=float(g2_0), center=float(center), period=float(period),

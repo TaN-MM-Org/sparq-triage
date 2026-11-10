@@ -604,6 +604,15 @@ def simulate_photon_stream(site: EmitterSite, T_s: float,
     detectors, before dead time): a share `rho` of it comes from the
     emitter, the rest is background. Blinking switches the emitter
     light off and on; the background keeps going.
+
+    The emitter light is the emitted photons, each kept with a
+    collection efficiency chosen to give the site's signal rate. A
+    signal rate above what the emitters give out at all (every photon
+    kept) is refused with ValueError (from 0.15.0). Up to 0.14.0 the
+    efficiency was capped at 1 without a word, so the stream held fewer
+    photons than `rate_kcps` asked for, while `expected_histogram` used
+    the full rate: for tau1 = 15 ns, tau2 = 250 ns, a = 0.3, asked for
+    5e7 counts/s, it gave 1.2e7.
     """
     p = site.params
     rates = _site_rates(p["tau1"], p["tau2"], p["a"])
@@ -611,6 +620,12 @@ def simulate_photon_stream(site: EmitterSite, T_s: float,
     # (from the exact steady-state emission rate, new in 0.10.0)
     r_signal = p["rate_kcps"] * 1e3 * p["rho"]
     emission_rate = site.n_emitters * _emission_rate_per_ns(*rates) * 1e9
+    if r_signal > emission_rate * (1.0 + 1e-12):
+        raise ValueError(
+            f"the site's signal rate {r_signal:.4g} counts/s is above the "
+            f"{emission_rate:.4g} photons/s that its {site.n_emitters} "
+            f"emitter(s) give out with these tau1, tau2 and a, even if "
+            "every photon were detected; lower rate_kcps or rho")
     eta = min(1.0, r_signal / emission_rate)
     det = _simulate_emission_times(p, site.n_emitters, T_s, rng, keep=eta)
     # blinking telegraph gate

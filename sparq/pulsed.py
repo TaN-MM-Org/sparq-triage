@@ -83,21 +83,38 @@ def expected_hist_pulsed(cfg: HBTConfig, T_s, rate_cps, g2_0, tau_e,
 
 def calibrate_comb(delay, hist, t_rep=T_REP_NS):
     """Find the comb phase and the suppressed (center) peak position from a
-    full accumulation. Returns (center, phase, period)."""
+    full accumulation. Returns (center, phase, period).
+
+    The phase is where the counts within +-w_fold of the folded period
+    are highest, and each peak's area is summed within +-half, with
+    w_fold = min(1.5 ns, t_rep/4) and half = min(3 ns, t_rep/2). From
+    0.15.0 the two windows shrink with the period; up to 0.14.0 they were
+    1.5 ns and 3 ns for every period, which at periods below about 3 ns
+    (laser rates above about 330 MHz) cover a whole period or more, so
+    the phase and the zero-delay peak came out wrong (at 400 MHz the
+    comb fit then returned g2(0) = 0 for a true 0.6). For periods of
+    6 ns or more the windows, and so the results, are unchanged. The
+    delays may be in increasing or decreasing order (from 0.15.0)."""
+    delay = np.asarray(delay, dtype=float)
+    hist = np.asarray(hist, dtype=float)
+    w_fold = min(1.5, 0.25 * t_rep)
+    half = min(3.0, 0.5 * t_rep)
     # comb phase: fold onto the period, take circular max of the folded sum
     nphase = 250
     phases = np.linspace(0, t_rep, nphase, endpoint=False)
     folded = np.zeros(nphase)
     for i, ph in enumerate(phases):
-        m = np.abs(((delay - ph + t_rep / 2) % t_rep) - t_rep / 2) < 1.5
+        m = np.abs(((delay - ph + t_rep / 2) % t_rep) - t_rep / 2) < w_fold
         folded[i] = hist[m].mean()
     phase = phases[int(np.argmax(folded))]
-    # peak positions across the record
-    kmin = int(np.ceil((delay[0] - phase) / t_rep))
-    kmax = int(np.floor((delay[-1] - phase) / t_rep))
+    # peak positions across the record (from 0.15.0 from the smallest and
+    # largest delay, so that a decreasing delay axis works too)
+    d_lo, d_hi = float(delay.min()), float(delay.max())
+    kmin = int(np.ceil((d_lo - phase) / t_rep))
+    kmax = int(np.floor((d_hi - phase) / t_rep))
     pos = phase + np.arange(kmin, kmax + 1) * t_rep
-    # peak areas (+- 3 ns windows)
-    areas = np.array([hist[(delay >= p - 3) & (delay <= p + 3)].sum()
+    # peak areas (+- half windows)
+    areas = np.array([hist[(delay >= p - half) & (delay <= p + half)].sum()
                       for p in pos])
     # suppressed peak = global minimum of smoothed areas (avoid edges)
     v = areas.copy().astype(float)
@@ -107,7 +124,7 @@ def calibrate_comb(delay, hist, t_rep=T_REP_NS):
         # a short record (new in 0.11.0): up to 0.10.0 every peak was
         # excluded here and the first one was returned; now only peaks
         # whose window is cut by the record's ends are left out
-        inside = (pos - 3 >= delay[0]) & (pos + 3 <= delay[-1])
+        inside = (pos - half >= d_lo) & (pos + half <= d_hi)
         if inside.any():
             v[~inside] = np.inf
     center = float(pos[int(np.argmin(v))])
@@ -127,7 +144,12 @@ def g2_peak_area(delay, hist, center, t_rep=T_REP_NS, n_side=6, half=3.0):
     Refuses (ValueError, new in 0.11.0) a period that leaves no bins
     4.5 ns from every peak (up to 0.10.0: NaN with NumPy warnings).
     Returns NaN when no side peak lies inside the record or the side
-    peaks' mean area is not positive."""
+    peaks' mean area is not positive. The delays may be in increasing or
+    decreasing order (from 0.15.0; up to 0.14.0 a decreasing axis gave
+    NaN, because no side peak was found inside the record)."""
+    delay = np.asarray(delay, dtype=float)
+    hist = np.asarray(hist, dtype=float)
+    d_lo, d_hi = float(delay.min()), float(delay.max())
     # background floor from inter-peak regions
     off = np.abs(((delay - center + t_rep / 2) % t_rep) - t_rep / 2)
     if not np.any(off > 4.5):
@@ -144,7 +166,7 @@ def g2_peak_area(delay, hist, center, t_rep=T_REP_NS, n_side=6, half=3.0):
     for k in range(1, n_side + 1):
         for s in (-1, 1):
             p = center + s * k * t_rep
-            if p - half >= delay[0] and p + half <= delay[-1]:
+            if p - half >= d_lo and p + half <= d_hi:
                 sides.append(area(p))
     a_side = np.mean(sides) if sides else np.nan
     if not np.isfinite(a_side) or a_side <= 0:
