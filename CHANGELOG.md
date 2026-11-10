@@ -1,5 +1,133 @@
 # Changelog
 
+## 0.15.0 (2026-11-10)
+
+Fits lifetimes with a measured instrument response of any shape, gives
+an interval for g2(0) under every dip model, and fixes a pulsed
+analysis that read g2(0) as 0 at laser rates above about 330 MHz, a
+model fit that stopped short of its best point, and three inputs that
+were accepted without a word.
+
+### Added
+
+- `fit_lifetime(..., irf=...)` and `expected_decay(..., irf=...)`: the
+  decay fitted with a measured instrument response instead of a
+  Gaussian (the "reconvolution" fit). `irf` holds the counts of the
+  response on the same equal bins as the decay, for example of the
+  laser light scattered into the detector, with its own background
+  subtracted. Each response bin's counts are taken to be spread evenly
+  over the bin, and a decay bin's share of the photons excited in it is
+  then a closed form, the second difference of
+  Psi(x) = x - tau (1 - e^(-x/tau)) over the bin width (written as a
+  product, with expm1, where the two bins do not overlap). Each
+  component is a convolution of the response with these shares; with
+  `t_rep` the pulses whose response ends before the record add a
+  geometric series in closed form. `t0` is then the shift of the
+  response (fitted unless given) and `sigma_irf` is NaN. No literature
+  value is used. Checked against the convolution integral computed bin
+  by bin with SciPy's quad (1e-12), a direct sum over the pulses
+  (1e-12), and the Gaussian model of 0.14.0 for a finely binned
+  Gaussian response, which it approaches with the square of the bin
+  width (the difference falls by 3.5 to 4.5 times per halving). The fit
+  recovers noise-free decays to 1e-6 (one and two lifetimes). On
+  photons with a response that has a slow tail, made photon by photon,
+  the Gaussian fit is rejected (p < 1e-6) and misses the true lifetime
+  (1.634 ns [1.621, 1.647] for a true 1.5 ns), while the fit with the
+  measured response holds it (1.498 [1.486, 1.510], p = 0.40); an
+  independent Nelder-Mead minimization finds no better fit and puts the
+  profile deviance at both ends at 3.84 within 0.01; at least 16 of 20
+  simulated 95 % intervals hold the truth (done once outside the suite:
+  186 and 196 of 200 for a dim and a bright emitter, with 4.5 % of the
+  p-values below 0.05 in both). README example 24.
+- `fit_model(..., level=0.95)`: a profile-likelihood interval for
+  g2(0) under any dip model (`g2_0_lo`, `g2_0_hi`, `level`,
+  `profile_improved`), so that the coherently driven emitter and the
+  model with several shoulders get one too. The profile is followed
+  outward from the best fit with every other parameter fitted again
+  (each point started from its neighbor) and each end refined by brentq
+  to 1e-4. With `level=None` (the default) no interval is computed.
+  For the three-level model with the flat level pinned it equals the
+  interval of `profile_likelihood_ci` (a separate implementation)
+  within 1e-3; for the coherent fit of README example 10 an independent
+  Nelder-Mead profile puts the deviance at both ends at 3.84 within
+  0.02, and the interval [0.075, 0.148] holds the true 0.1; at least 8
+  of 10 simulated 95 % intervals hold the truth (done once outside the
+  suite: 190 of 200 at 120 s and 188 of 200 at 20 s, about 15 and
+  2.5 counts in the zero-delay bin). README example 10.
+
+### Fixed
+
+- **The pulsed analysis at high laser rates.** `calibrate_comb`, which
+  places the comb before the fit, folded the record within +-1.5 ns of
+  each phase and summed each peak within +-3 ns, whatever the period.
+  Below about 3 ns (above about 330 MHz) these windows cover a whole
+  period or more, and the zero-delay peak was put on a side peak or
+  between peaks. On noise-free data with g2(0) = 0.12, `fit_pulsed`
+  then returned 0.000 at 400 MHz (peak at 1.05 ns placed at 2.5 ns) and
+  at 1 GHz (0.3 ns placed at 2.0 ns); on a simulated 400 MHz run with a
+  true g2(0) of 0.6, `analyze_pulsed` returned 0.000 and
+  `single_emitter` True, with no warning (only its fit p-value, 0.0,
+  showed it). The windows are now min(1.5 ns, t_rep/4) and
+  min(3 ns, t_rep/2): the noise-free fits return 0.1200 and the
+  peak to 1e-3 ns, and the 400 MHz run gives 0.598 with the 95 %
+  interval [0.507, 0.700] (p = 0.44). For periods of 6 ns or more the
+  windows, and so every result, are unchanged (tested against the
+  0.14.0 function, exactly). Tests `test_comb_fit_at_high_laser_rates`
+  and `test_comb_calibration_unchanged_at_periods_of_6_ns_and_more`.
+- **`fit_model` stopped short of its best fit.** It minimized
+  sum(mu - h log mu), a number of the order of the total counts, on
+  which L-BFGS-B's relative stopping rule ends the search early. For a
+  three-level site (tau1 12 ns, tau2 150 ns, a = 0.5, 30 s at 200 kcps,
+  flat level pinned) it returned g2(0) = 0.17507 with a deviance of
+  131.400; the best fit, found by an independent Nelder-Mead
+  minimization and by `profile_likelihood_ci`, is 0.17332 with 131.352,
+  which it now returns (the same with SciPy 1.18 and 1.10). The
+  objective is now half the Poisson deviance, as in
+  `profile_likelihood_ci` since 0.12.0; `aic` keeps its definition. The
+  coherent fit of README example 10 is unchanged (g2(0) 0.110,
+  p = 0.40). Its three-level fit, which is rejected, now reaches a
+  deviance of 345.74 with SciPy 1.18 (was 350.16; p-value 8.3e-11 ->
+  2.2e-10) and 348.81 with SciPy 1.10 (was 345.75; 2.2e-10 -> 1.1e-10):
+  a model that does not fit has several local minima, and which one the
+  search ends in still depends on the SciPy version. Test
+  `test_fit_model_reaches_its_best_fit`.
+- **A decreasing delay axis in the peak-area analysis.**
+  `analyze_pulsed(method="area")` failed with "attempt to get argmin of
+  an empty sequence", and `g2_peak_area` returned NaN, for delays in
+  decreasing order (which `fit_pulsed` and `analyze_histogram` accept).
+  They now give what the increasing axis gives (for the test's data,
+  80 MHz and a 1 ns lifetime: g2(0) = 0.1124 both ways). Test
+  `test_peak_area_analysis_accepts_a_decreasing_delay_axis`.
+- **The bootstrap level was not checked.** `analyze_histogram` and
+  `analyze_pulsed(method="area")` took any `ci`: ci = -0.5 gave an
+  interval whose low end lay above its high end (0.069 and 0.057 with
+  10 redraws of the test's data), ci = 0 one of zero width, and ci = 95
+  (a percentage) an error from inside NumPy. A `ci` outside (0, 1) is
+  now refused when an interval is asked for (`n_bootstrap` > 0); without
+  the bootstrap it is not used and not checked, as before. Test
+  `test_bootstrap_level_is_checked`.
+- **The photon-by-photon simulator gave fewer photons than asked for.**
+  `simulate_photon_stream` chose the collection efficiency that gives
+  the site's signal rate and capped it at 1 without a word, so a signal
+  rate above what the emitters give out produced a slower stream than
+  `rate_kcps` said, while `expected_histogram` used the full rate (for
+  tau1 = 15 ns, tau2 = 250 ns, a = 0.3, one emitter: 1.2e7 counts/s for
+  5e7 asked). This is now refused with the largest rate those rates
+  allow. Test `test_photon_simulator_refuses_a_rate_it_cannot_give`.
+
+### Changed
+
+- CI: the test jobs run on `ubuntu-24.04` instead of `ubuntu-latest`,
+  which has moved to Ubuntu 26.04, so that the runner image stays the
+  same from run to run. The publish workflow is unchanged.
+- Tutorials: their outputs are what 0.15.0 prints (unchanged from
+  0.14.0); the docstrings now name 0.15.0.
+
+### Tests
+
+- 254 tests (237 before): test_release_015 (17). The new tests run on
+  NumPy 1.24.0 and SciPy 1.10.0 as well.
+
 ## 0.14.0 (2026-10-18)
 
 Fits the excited-state lifetime of an emitter from a TCSPC decay

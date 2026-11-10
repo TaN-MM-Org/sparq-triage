@@ -39,7 +39,8 @@ time stamps, or a PicoQuant PTU file) and answers:
 - How bright does the emitter get, and at what excitation power does it
   saturate?
 - How long does the emitter stay excited (its lifetime), from the
-  photons' delays after the pulses of a pulsed laser?
+  photons' delays after the pulses of a pulsed laser, with a Gaussian
+  or a measured detector response?
 
 The analysis core needs only NumPy and SciPy. An optional
 machine-learning layer (PyTorch) holds the neural estimators and the
@@ -172,14 +173,14 @@ Units:
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with sparq-triage 0.14.0 (Python 3.13, NumPy 2.5.3, SciPy
+printed with sparq-triage 0.15.0 (Python 3.13, NumPy 2.5.3, SciPy
 1.18.1). All emitter numbers are illustrative values, not
 measurements. The data are simulated with a fixed random seed, so you
 get the same output. With other NumPy or SciPy versions some printed
 numbers can differ a little: in example 11, whose sampler follows the
 fit it starts from, and in the p-value of the rejected fit of example
-10 (2.2e-10 with SciPy 1.10), whose optimizer stops at a slightly
-different point.
+10 (1.1e-10 with SciPy 1.10), whose optimizer stops at a different
+point.
 
 ### 1. Analyze a measured histogram
 
@@ -603,19 +604,29 @@ for model, fixed in (("three_level", None), ("coherent", dict(delta=0.0))):
     fit = fit_model(counts, T, rate, cfg, model, fixed=fixed,
                     c0_prior=(1.0, 0.01))
     print(f"{model:12s} g2(0) = {fit['g2_0']:.3f}, p-value {fit['p_value']:.1e}")
+
+fit = fit_model(counts, T, rate, cfg, "coherent", fixed=dict(delta=0.0),
+                c0_prior=(1.0, 0.01), level=0.95)
+print(f"coherent     95 % interval for g2(0): "
+      f"[{fit['g2_0_lo']:.3f}, {fit['g2_0_hi']:.3f}]")
 ```
 
 ```
-three_level  g2(0) = 0.000, p-value 8.3e-11
+three_level  g2(0) = 0.000, p-value 2.2e-10
 coherent     g2(0) = 0.110, p-value 4.0e-01
+coherent     95 % interval for g2(0): [0.075, 0.148]
 ```
 
 `fit_model` fits a dip model by the exact Poisson likelihood and
 reports a goodness-of-fit **p-value**: the chance that data from the
 fitted model would fit at least this badly. Here the three-level
 formula is rejected (p about 1e-10) and reads g2(0) as 0, while the
-model of a coherently driven emitter fits and recovers g2(0) = 0.1
-within its error. The models are the three-level formula, a
+model of a coherently driven emitter fits, and its 95 % interval holds
+the true g2(0) of 0.1. With `level`, `fit_model` gives that interval
+for any of its models (new in 0.15.0): a profile-likelihood interval,
+as in example 3, with every other parameter of the model fitted again
+at each value of g2(0). An interval from a model that the p-value
+rejects means little. The models are the three-level formula, a
 `"multi_exponential"` form with several shoulders (several dark
 states), and `"coherent"`, a two-level emitter driven by a laser on or
 near resonance, computed from its exact master equation. `g2_model`
@@ -1160,6 +1171,65 @@ describe the decay, for example a second lifetime or an instrument
 response with a slower tail than a Gaussian. `expected_decay` gives the
 model's mean counts.
 
+### 24. Lifetime with a measured instrument response
+
+```python
+import numpy as np
+from sparq import fit_lifetime
+
+# Illustrative detector response with a slow tail: a 60 ps Gaussian core,
+# and a quarter of the photons delayed further (0.5 ns on average)
+def response(rng, n):
+    t = 1.0 + rng.normal(0.0, 0.06, n)
+    tail = rng.random(n) < 0.25
+    t[tail] += rng.exponential(0.5, tail.sum())
+    return t
+
+rng = np.random.default_rng(24)
+edges = np.linspace(0.0, 12.5, 501)               # 25 ps bins, 80 MHz laser
+delay = 0.5 * (edges[1:] + edges[:-1])
+# the response, measured on scattered laser light (1e6 photons)
+irf, _ = np.histogram(response(rng, 1_000_000) % 12.5, bins=edges)
+# the emitter: 1e5 photons with a 1.5 ns lifetime, plus 2000 dark counts
+t = response(rng, 100_000) + rng.exponential(1.5, 100_000)
+counts, _ = np.histogram(np.r_[t % 12.5, rng.uniform(0.0, 12.5, 2000)],
+                         bins=edges)
+
+gauss = fit_lifetime(delay, counts, t_rep=12.5)
+meas = fit_lifetime(delay, counts, t_rep=12.5, irf=irf)
+for name, f in (("Gaussian response", gauss), ("measured response", meas)):
+    print(f"{name}: lifetime {f['tau'][0]:.3f} ns, 95 % interval "
+          f"[{f['tau_lo'][0]:.3f}, {f['tau_hi'][0]:.3f}], "
+          f"p-value {f['p_value']:.2g}")
+print(f"shift of the measured response {meas['t0'] * 1e3:.1f} ps")
+```
+
+```
+Gaussian response: lifetime 1.634 ns, 95 % interval [1.621, 1.647], p-value 5.4e-11
+measured response: lifetime 1.501 ns, 95 % interval [1.489, 1.513], p-value 0.74
+shift of the measured response -1.9 ps
+```
+
+Many detectors do not respond with a clean Gaussian: a share of the
+clicks comes late, in a slow tail. The Gaussian fit of example 23 then
+puts that tail into the lifetime. Here it reads 1.634 ns for a true
+1.5 ns, and its p-value rejects it. Give the response itself instead,
+as `irf`: its counts on the same bins, recorded with the same settings
+(for example on laser light scattered into the detector), with its own
+background subtracted. `fit_lifetime` then fits the exponential decay
+convolved with that measured response (this is often called a
+reconvolution fit): its interval holds the true 1.5 ns, and its
+p-value accepts the model. The response may be shifted a little against
+the decay (cables, or a detector delay that depends on the
+wavelength); that shift is fitted and returned as `t0`. Each bin of
+the response is taken to hold its counts spread evenly over the bin,
+which is exact enough when the bins are narrow compared with the
+response (the error falls with the square of the bin width). The
+counting noise of the response itself is not in the interval, so
+record it with many more counts than the decay, as here (1e6 against
+1e5). `expected_decay(..., irf=...)` gives the same model's mean
+counts.
+
 ## Tutorials
 
 Three scripts in the [`examples`](examples) folder of the source
@@ -1168,7 +1238,7 @@ to a final result with uncertainties. Each one makes its own data with a
 fixed random seed (illustrative numbers, not measurements) and uses only
 the package. Run them from the repository folder, for example `python
 examples/tutorial_saturation.py`. The output below is what they printed
-with sparq-triage 0.14.0 (Python 3.13, NumPy 2.5.3, SciPy 1.18.1); each
+with sparq-triage 0.15.0 (Python 3.13, NumPy 2.5.3, SciPy 1.18.1); each
 script quotes it at the top, and a test runs the scripts and checks
 their numbers.
 
@@ -1259,7 +1329,9 @@ example) gives its inputs, units and conventions.
   (example 11).
 - `fit_model`, `goodness_of_fit`, `g2_model`,
   `exp_conv_gauss_complex` -- other dip shapes and their p-values
-  (example 10); `goodness_of_fit` gives a p-value by simulation.
+  (example 10); `goodness_of_fit` gives a p-value by simulation, and
+  `fit_model(level=...)` a profile-likelihood interval for g2(0)
+  under any of the models.
 - `SPRTCertifier` -- sequential test between two emitter models
   (example 5). `WindowSPRT` -- sequential test with no emitter model
   (example 13).
@@ -1285,7 +1357,8 @@ example) gives its inputs, units and conventions.
   intervals for `R_inf` and `P_sat` (example 21 and the first tutorial).
 - `fit_lifetime`, `expected_decay`: the excited-state lifetime (one or
   two) from a TCSPC decay histogram, with intervals, and the model's
-  mean counts (example 23 and the third tutorial).
+  mean counts, with a Gaussian instrument response (example 23 and the
+  third tutorial) or a measured one (`irf`, example 24).
 - `load_timetags_csv`, `save_timetags_csv`, `correlate`,
   `correlate_start_stop`, `normalize_g2` -- time tags to g2
   (example 7). `read_ptu`, `load_ptu_timetags`, `save_ptu_t2` --
@@ -1369,7 +1442,8 @@ explicitly)
 - delays and counts differ in length or are not 1-D, or counts are
   negative, or either holds a NaN or infinity, or `T_s` is not a
   positive number (`analyze_histogram`, `analyze_pulsed`);
-  `singles_cps` is not one or two positive rates;
+  `singles_cps` is not one or two positive rates; `ci` lies outside
+  (0, 1) when a bootstrap interval is asked for (from 0.15.0);
 - `fit_g2_histogram` and `profile_likelihood_ci` get a histogram whose
   length is not `cfg.n_bins`, counts that are negative or not finite,
   or a `T_s` or `r_hat` that is not a positive number;
@@ -1407,10 +1481,10 @@ explicitly)
   overlap, or a prior with shape <= 0 or rate < 0; `G2Posterior.mean`
   when the mean does not exist (almost no far counts), and quantile or
   interval levels outside (0, 1);
-- `fit_model` gets an unknown model, a fixed parameter the model
-  does not have, or a `T_s` or `r_hat` that is not positive and
-  finite; `bayesian_g2_model` a histogram of the wrong length,
-  no counts, or `a_max` <= 0;
+- `fit_model` gets an unknown model, a fixed parameter the model does
+  not have, a `T_s` or `r_hat` that is not positive and finite, or a
+  `level` outside (0, 1) (from 0.15.0); `bayesian_g2_model` a
+  histogram of the wrong length, no counts, or `a_max` <= 0;
 - `SPRTCertifier` gets error rates outside (0, 1), a hypothesis with
   zero expected counts in some bin, data on a different grid, negative
   or non-finite counts, or a time step that is not a positive number; `WindowSPRT` error rates outside (0, 1),
@@ -1439,7 +1513,9 @@ explicitly)
   negative `a`, or a pump fraction for which no rates exist (the
   message names the smallest that works); `simulate_photon_stream`
   gets a site for which no three-level rates exist (for example
-  `tau2` not above `tau1` with `a` > 0);
+  `tau2` not above `tau1` with `a` > 0), or a signal rate above what
+  its emitters give out even if every photon were detected (from
+  0.15.0);
 - `heralded_g2_limit` gets a raw CAR below 1 + 1/K (1 for
   laser-pumped, 2 for thermal) or not finite, an unknown `statistics`
   or `car_definition`, or a non-positive `modes`; `car_for_purity` a
@@ -1482,7 +1558,10 @@ explicitly)
   negative or non-finite `sigma_irf`, a non-finite `t0`, an
   `n_components` other than 1 or 2, or a `level` outside (0, 1);
   `expected_decay` lifetimes that are not positive, negative areas or
-  background, or a different number of areas and lifetimes;
+  background, or a different number of areas and lifetimes; with a
+  measured response (`irf`, from 0.15.0) both also refuse a response
+  of another length, with negative or non-finite counts or none, one
+  given together with `sigma_irf`, and bins of unequal width;
 - `window_g2_ci` gets what `bayesian_g2` refuses, counts that are not
   whole, or no counts in either window; `count_ratio_ci` counts that
   are negative or not whole, both counts zero, bin numbers that are not
@@ -1496,7 +1575,7 @@ explicitly)
 
 ## How the results are checked
 
-237 automated tests run on every push to `main` and every pull
+254 automated tests run on every push to `main` and every pull
 request. In CI they run on Python 3.10, 3.11, 3.12, 3.13 and 3.14 with
 CPU PyTorch; once more on Python 3.14 without PyTorch, where the
 machine-learning test files are skipped; and once more on Python 3.10
@@ -1797,6 +1876,50 @@ fixed seeds. The main checks:
   500 bins, at 80 MHz), the 95 % intervals held the true lifetime in 191
   and 190 runs; 6.5 % and 3 % of the p-values fell below 0.05.
 
+**Measured instrument response, intervals under any dip model, and the
+fixes** (new in 0.15.0)
+
+- `expected_decay(..., irf=...)`: each bin's share of the decay equals
+  the convolution integral of the response (its counts spread evenly
+  over each bin) with the exponential, computed bin by bin with SciPy's
+  `quad`, to 1e-12, for lifetimes from a fiftieth of a bin to many
+  bins; with a laser period the closed geometric sum over earlier
+  pulses equals the direct sum over the pulses to 1e-12 of the largest
+  bin, and one period holds one pulse's photons to 1e-12. A response
+  binned from a Gaussian gives the Gaussian model of 0.14.0 up to an
+  error that falls by 3.5 to 4.5 times each time the bins are halved
+  (it is of second order in the bin width).
+- `fit_lifetime(..., irf=...)`: on noise-free decays it returns the
+  lifetimes, areas, shift and background to 1e-6 (one and two
+  lifetimes). On photons whose response has a slow tail, made photon by
+  photon, the Gaussian fit is rejected (p < 1e-6) and its interval
+  misses the true lifetime, while the fit with the measured response
+  holds it with p > 0.01; an independent Nelder-Mead minimization finds
+  no better fit and puts the profile deviance at both ends of the
+  interval at 3.84 within 0.01. Of 20 simulated dim decays, at least 16
+  of the 95 % intervals hold the truth. Done once outside the test
+  suite, over 200 simulated decays each of a dim emitter (2 ns, about
+  3100 photons in 125 bins) and a bright one (6 ns, about 1e5 photons
+  in 500 bins, at 80 MHz), the 95 % intervals held the true lifetime in
+  186 and 196 runs, and 4.5 % of the p-values fell below 0.05 in both.
+- `fit_model(level=0.95)`: for the three-level model with the flat
+  level pinned, its interval equals that of `profile_likelihood_ci` (a
+  separate implementation) within 1e-3 at both ends; for the coherent
+  fit of example 10 an independent Nelder-Mead profile puts the
+  deviance at both ends at 3.84 within 0.02; at least 8 of 10 simulated
+  95 % intervals hold the true g2(0). Done once outside the test suite,
+  over 200 simulated runs each of that emitter at 120 s and at 20 s
+  (about 15 and 2.5 counts in the zero-delay bin), the 95 % intervals
+  held the true g2(0) in 190 and 188 runs.
+- Fixes, each with a test that fails on 0.14.0: the comb fit at 400 MHz
+  and 1 GHz returns g2(0) to 1e-4 and the peak position to 1e-3 ns
+  (0.14.0: 0.000), and `calibrate_comb` gives exactly the 0.14.0 result
+  at periods of 6 ns and more; `fit_model` ends within 2e-4 in g2(0) of
+  an independent Nelder-Mead optimum (0.14.0: 0.0017 off); a decreasing
+  delay axis gives the peak-area result of the increasing one; a
+  bootstrap `ci` outside (0, 1) and a signal rate the photon simulator
+  cannot give are refused.
+
 **Machine learning**
 
 - An untrained convolutional or spiking network has a balanced
@@ -1826,7 +1949,38 @@ figures of the manuscript, and `load_fisequr` on the real data set.
 
 ## Corrections in earlier versions
 
-**0.14.0 (this release) corrects this.**
+**0.15.0 (this release) corrects these.**
+
+- **The pulsed analysis at high laser rates.** Before the comb fit,
+  `calibrate_comb` places the comb with windows of +-1.5 ns and +-3 ns,
+  whatever the period. Below about 3 ns per period (above about
+  330 MHz) those windows span a whole period, and the zero-delay peak
+  was put in the wrong place. On noise-free data with g2(0) = 0.12 the
+  fit then returned 0.000 at 400 MHz and at 1 GHz, and on a simulated
+  400 MHz run with a true g2(0) of 0.6, `analyze_pulsed` said 0.000 and
+  "single emitter", with no warning. The windows now shrink with the
+  period: the fits return 0.1200, and the 400 MHz run gives 0.598 with
+  the 95 % interval [0.507, 0.700]. At 6 ns per period and more nothing
+  changes.
+- **`fit_model` stopped short of its best fit.** Its objective was a
+  number of the order of the total counts, on which the optimizer's
+  relative stopping rule ends the search early (the same cause as the
+  0.12.0 correction of `profile_likelihood_ci`). For a three-level site
+  with the flat level pinned it returned g2(0) = 0.1751 where the best
+  fit is 0.1733. It now reaches the best fit. The coherent fit of
+  example 10 is unchanged; its rejected three-level fit now prints the
+  p-value 2.2e-10 (was 8.3e-11).
+- **Inputs accepted without a word.** `analyze_histogram` and
+  `analyze_pulsed(method="area")` took a bootstrap level `ci` outside
+  (0, 1): ci = -0.5 gave an interval whose low end lay above its high
+  end. The peak-area analysis failed with an unrelated error on a
+  decreasing delay axis. `simulate_photon_stream` gave fewer photons
+  than asked for when the signal rate exceeded what the emitters give
+  out (1.2e7 counts/s for 5e7 asked). The first and last are now
+  refused, and a decreasing axis gives the same result as an increasing
+  one.
+
+**0.14.0 corrected this.**
 
 - **A saturation fit that could not fit.** `fit_saturation` with
   `background="none"` and counts at zero power (the curve without dark
@@ -2027,11 +2181,13 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   Its interval is that of the three-level model within the search
   ranges; when a nuisance parameter ends on a range limit (a warning
   says so), check the interval with a wider range, as in example 3.
-- `fit_model` is a local search. When a model fits badly it can stop
-  short of its best fit, by an amount that depends on the SciPy
-  version (example 10: deviance 350.16 with SciPy 1.18, 345.75 with
-  SciPy 1.10). The p-value is then too small, which does not change a
-  clear rejection.
+- `fit_model` is a local search. When a model fits badly its
+  likelihood has several minima, and which one the search ends in
+  depends on the SciPy version (example 10: deviance 345.74 with SciPy
+  1.18, 348.81 with SciPy 1.10). The p-value is then too small, which
+  does not change a clear rejection. Its interval for g2(0) (`level`)
+  belongs to the chosen model, and it is followed outward from the best
+  fit by local searches too.
 - `check_stationarity` uses the chi-square law of its statistics, which
   needs at least about 5 expected counts per cell; it refuses smaller
   counts instead of guessing. It tells that the source changed, not
@@ -2050,12 +2206,16 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   intervals (they cover at least as often as the level says), and like
   `bayesian_g2` they are for the window g2, an upper bound on g2(0)
   when the dip is wider than the window.
-- `fit_lifetime` assumes a Gaussian instrument response, decays that
-  are exponential (one or two lifetimes) and a flat background, and
-  Poisson counts. An instrument response with a slower tail than a
-  Gaussian is not described (measure the response on the laser light
-  to see its shape); with enough counts the p-value shows the misfit.
-  High count rates (more than one photon per laser
+- `fit_lifetime` assumes decays that are exponential (one or two
+  lifetimes), a flat background and Poisson counts, and an instrument
+  response that is either Gaussian or given as measured (`irf`). A
+  response with a slower tail than a Gaussian needs `irf`; without it,
+  with enough counts, the p-value shows the misfit. A measured response
+  must be on the same equal bins as the decay, is taken to hold its
+  counts spread evenly within each bin (fine when the bins are narrow
+  compared with it), and its own counting noise is not in the
+  intervals (record it with many more counts than the decay). High
+  count rates (more than one photon per laser
   period now and then, detector dead time) distort a TCSPC histogram;
   this is not modeled. A decay much longer than the period looks flat
   and is taken for background, and one much shorter than the jitter
@@ -2072,7 +2232,8 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   intervals covered the truth in 91 % to 94 % of simulated runs, a
   little below 95 %. With `envelope=True` and no singles rates the
   interval often stays open above. The fit takes about a second, and
-  the interval a few seconds more.
+  the interval a few seconds more. It is tested at laser periods from
+  1 ns to 12.5 ns (1 GHz to 80 MHz).
 - PTU reading was checked against two independent readers on files
   written from PicoQuant's format description, not on files recorded
   by hardware. Other vendors' binary formats are not read; export
