@@ -28,8 +28,10 @@ preferred-citation:
       given-names: Abu S. M.
   journal: "ACS Photonics"
   year: 2026
-  month: 10
+  volume: 13
+  issue: 21
+  start: 6545
+  end: 6554
   doi: 10.1021/acsphotonics.6c01984
   url: "https://doi.org/10.1021/acsphotonics.6c01984"
-  status: advance-online
-  notes: "Published online 15 October 2026; volume and pages not yet assigned."
+  notes: "Published online 15 October 2026; in the issue of 4 November 2026."

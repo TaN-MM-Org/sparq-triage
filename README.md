@@ -46,7 +46,7 @@ machine-learning layer (PyTorch) holds the neural estimators and the
 automated triage agent of the paper *"Closed-Loop, Event-Driven
 Machine Learning for Autonomous Triage of Single-Photon Emitters"*
 (T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M. Mohsin),
-*ACS Photonics* (2026),
+*ACS Photonics* **13**(21), 6545–6554 (2026),
 [doi:10.1021/acsphotonics.6c01984](https://doi.org/10.1021/acsphotonics.6c01984);
 the
 [companion repository](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters)
@@ -2087,9 +2087,10 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 The package is the installable part of the paper *"Closed-Loop,
 Event-Driven Machine Learning for Autonomous Triage of Single-Photon
 Emitters"* by T. M. Mahim, M. N. Islam, M. M. Rahman and A. S. M.
-Mohsin, *ACS Photonics* (2026), published online on 15 October 2026,
+Mohsin, *ACS Photonics* **13**(21), 6545–6554 (2026),
 [doi:10.1021/acsphotonics.6c01984](https://doi.org/10.1021/acsphotonics.6c01984).
-Volume and pages are not yet assigned. The
+It was published online on 15 October 2026 and appeared in the issue
+of 4 November 2026. The
 [companion repository](https://github.com/Tanvir-Mahmud-Mahim/a-spiking-RL-triage-of-solid-state-single-photon-emitters)
 reproduces the paper itself.
 
