@@ -10,7 +10,7 @@ laser period must be given when the decay lasts into the next period,
 and how a second lifetime is found and checked.
 
 Run it with `python examples/tutorial_lifetime.py`. It printed
-(sparq 0.14.0, Python 3.13, NumPy 2.5.3, SciPy 1.18.1):
+(sparq 0.15.0, Python 3.13, NumPy 2.5.3, SciPy 1.18.1):
 
 lifetime 5.938 ns, 95 % interval [5.606, 6.225] (true 6); IRF FWHM 276 ps (true 283); p-value 0.04
 without the laser period: lifetime 4.074 ns, p-value 2.8e-09
