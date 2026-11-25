@@ -141,8 +141,8 @@ reproduces the paper itself.
 - **Reduced chi-square** -- the average of (deviation / expected
   scatter)^2 over all bins; it is close to 1 when the scatter of the
   data matches the stated error bars.
-- **Emitter types** named in the code: **NV** (nitrogen-vacancy centre
-  in diamond), **SiV** (silicon-vacancy centre in diamond), and defects
+- **Emitter types** named in the code: **NV** (nitrogen-vacancy center
+  in diamond), **SiV** (silicon-vacancy center in diamond), and defects
   in **hBN** (hexagonal boron nitride) and **GaN** (gallium nitride).
 
 ## Install, requirements and units
@@ -173,14 +173,15 @@ Units:
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with sparq-triage 0.15.0 (Python 3.13, NumPy 2.5.3, SciPy
+printed with sparq-triage 0.16.0 (Python 3.13, NumPy 2.5.3, SciPy
 1.18.1). All emitter numbers are illustrative values, not
 measurements. The data are simulated with a fixed random seed, so you
 get the same output. With other NumPy or SciPy versions some printed
 numbers can differ a little: in example 11, whose sampler follows the
-fit it starts from, and in the p-value of the rejected fit of example
+fit it starts from, in the p-value of the rejected fit of example
 10 (1.1e-10 with SciPy 1.10), whose optimizer stops at a different
-point.
+point, and in the simulated window p-value of example 26 (0.0025 with
+NumPy 1.24), whose random draws differ.
 
 ### 1. Analyze a measured histogram
 
@@ -574,7 +575,7 @@ warning issued: True
 ```
 
 The fit searches `tau1` and `tau2` within ranges (by default 0.3 to
-80 ns and 50 to 800 ns, NV-centre scales). This emitter is far
+80 ns and 50 to 800 ns, NV-center scales). This emitter is far
 faster, so the default fit ends on the edges of those ranges, reports
 which ones (`at_bound`), refits with them ten times wider, and, because
 that changes g2(0), warns. With `"auto"` the ranges are widened until
@@ -1230,6 +1231,104 @@ record it with many more counts than the decay, as here (1e6 against
 1e5). `expected_decay(..., irf=...)` gives the same model's mean
 counts.
 
+### 25. Saturation curve with a drifting focus
+
+```python
+import numpy as np
+from sparq import fit_saturation, saturation_curve
+
+# The scan of example 21, but the focus drifts: each point's rate is
+# off by a random 2 % (illustrative)
+power = np.array([0, 50, 100, 200, 300, 450, 600, 900, 1300, 2000.0])  # uW
+truth = dict(R_inf=600e3, P_sat=350.0, bg_slope=60.0, dark=300.0)
+rng = np.random.default_rng(25)
+drift = 1.0 + 0.02 * rng.standard_normal(power.size)
+counts = rng.poisson(saturation_curve(power, **truth) * drift * 0.5)
+
+for od in (False, True):
+    fit = fit_saturation(power, counts, t_s=0.5, overdispersion=od)
+    print(f"overdispersion={od!s:5}: P_sat [{fit['P_sat_lo']:.0f}, "
+          f"{fit['P_sat_hi']:.0f}] uW, R_inf [{fit['R_inf_lo'] / 1e3:.1f}, "
+          f"{fit['R_inf_hi'] / 1e3:.1f}] kcps (95 %)")
+print(f"P_sat {fit['P_sat']:.0f} uW, fit p-value {fit['p_value']:.1e}, "
+      f"dispersion {fit['dispersion']:.1f}")
+```
+
+```
+overdispersion=False: P_sat [362, 376] uW, R_inf [597.3, 615.5] kcps (95 %)
+overdispersion=True : P_sat [293, 465] uW, R_inf [512.9, 727.7] kcps (95 %)
+P_sat 369 uW, fit p-value 4.4e-67, dispersion 86.7
+```
+
+The intervals of example 21 assume Poisson counts. Here the points
+scatter far more than that (with 4e4 to 3e5 counts per point, a drift
+of 2 % is 4 to 11 times the Poisson scatter), the p-value rejects the
+fit, and the Poisson interval for `P_sat` misses the true 350 uW. With
+`overdispersion=True` (new in 0.16.0) the counts may scatter more than
+Poisson counts by a factor that is the same at every power: their
+variance is `dispersion` times their mean. That factor is estimated
+from the scatter about the fit (the sum of (counts - fit)^2 / fit over
+the points, divided by the number of points less the four fitted
+parameters; taken as at least 1), and the intervals are widened by it,
+with the quantile of the F distribution in place of the chi-square one,
+because the factor itself comes from only six degrees of freedom. The
+fitted curve does not change. In simulated scans (done once outside
+the test suite, 400 each) the 95 % intervals for `P_sat` held the truth
+in 391 runs with a 1 % drift and 387 with a 3 % drift, where the
+Poisson intervals held it in 148 and 58; with plain Poisson counts the
+widened intervals are cautious (396 of 400) and the Poisson ones right
+(381 of 400). A drift is not exactly a fixed factor (the extra scatter
+grows with the counts), so the widened interval is a fair, not an
+exact, answer; it is no cure for a curve of the wrong shape.
+
+### 26. A stationarity check with few counts
+
+```python
+import numpy as np
+from sparq import EmitterSite, HBTConfig, expected_histogram, check_stationarity
+
+params = dict(tau1=15.0, tau2=250.0, a=0.3, rate_kcps=150.0, rho=0.95,
+              blinking=False)                       # illustrative values
+one = EmitterSite(dict(params), n_emitters=1)
+two = EmitterSite(dict(params), n_emitters=2)
+cfg = HBTConfig()
+t = np.full(10, 2.0)                                # ten snapshots of 2 s
+rng = np.random.default_rng(26)
+# a second emitter takes part from the sixth snapshot on
+snaps = np.vstack([rng.poisson(np.outer(t[:5], expected_histogram(one, 1.0, cfg))),
+                   rng.poisson(np.outer(t[5:], expected_histogram(two, 1.0, cfg)))])
+print("zero-delay counts:", snaps[:, cfg.n_bins // 2])
+try:
+    check_stationarity(snaps, t, cfg)
+except ValueError as err:
+    print("chi-square law refused:", str(err).split(";")[0])
+r = check_stationarity(snaps, t, cfg, method="monte_carlo")
+print(f"by simulation: p-values rate {r['rate_p']:.2f}, window "
+      f"{r['window_p']:.4f}, shape {r['shape_p']:.2f}; consistent: "
+      f"{r['consistent']}")
+```
+
+```
+zero-delay counts: [ 2  3  1  1  4  7 12  3  3  3]
+chi-square law refused: the window test needs at least 5 expected counts in every cell
+by simulation: p-values rate 0.23, window 0.0030, shape 0.01; consistent: False
+```
+
+The chi-square law behind example 19 needs about 5 expected counts in
+every cell, and short snapshots do not have them, so it refuses. With
+`method="monte_carlo"` (new in 0.16.0) each p-value comes instead from
+2000 simulated series (`n_sim`) with the same totals, drawn from the
+exact law of the counts given those totals when the source is steady,
+and is the share of simulated series that look at least as uneven. Such
+a p-value holds at any count (a steady source gets p below 0.01 in at
+most 1 % of runs), is never below 1/(1 + n_sim), and varies by about
+sqrt(p (1 - p) / n_sim) from one `seed` to another. Here the window test
+sees the second emitter (p = 0.003, below 0.01/3). With so few counts
+the test does not always see it: in 40 runs of this kind (done once
+outside the test suite, 1000 simulated series each) 23 were called
+inconsistent, while the chi-square law refused all 40. The counts must
+be whole numbers.
+
 ## Tutorials
 
 Three scripts in the [`examples`](examples) folder of the source
@@ -1238,7 +1337,7 @@ to a final result with uncertainties. Each one makes its own data with a
 fixed random seed (illustrative numbers, not measurements) and uses only
 the package. Run them from the repository folder, for example `python
 examples/tutorial_saturation.py`. The output below is what they printed
-with sparq-triage 0.15.0 (Python 3.13, NumPy 2.5.3, SciPy 1.18.1); each
+with sparq-triage 0.16.0 (Python 3.13, NumPy 2.5.3, SciPy 1.18.1); each
 script quotes it at the top, and a test runs the scripts and checks
 their numbers.
 
@@ -1348,13 +1447,17 @@ example) gives its inputs, units and conventions.
   and beside the emitter, with an exact interval, for
   `background_corrected_g2(rho_ci=...)` (example 20).
 - `check_stationarity`: whether a series of snapshots comes from a
-  source that did not change (example 19).
+  source that did not change (example 19); with
+  `method="monte_carlo"` also for snapshots with few counts
+  (example 26).
 - `window_g2_ci`, `count_ratio_ci`: the window g2 (or any ratio of
   two counts) with an exact confidence interval and the exact test of
   "g2 >= 0.5" (example 22).
 - `fit_saturation`, `saturation_curve`, `saturation_from_rates`: the
   saturation curve: count rate against excitation power, fitted with
-  intervals for `R_inf` and `P_sat` (example 21 and the first tutorial).
+  intervals for `R_inf` and `P_sat` (example 21 and the first tutorial),
+  and with `overdispersion=True` intervals that allow for counts that
+  scatter more than Poisson counts (example 25).
 - `fit_lifetime`, `expected_decay`: the excited-state lifetime (one or
   two) from a TCSPC decay histogram, with intervals, and the model's
   mean counts, with a Gaussian instrument response (example 23 and the
@@ -1474,7 +1577,8 @@ explicitly)
 - `check_stationarity` gets fewer than two snapshots, snapshots not on
   the grid `cfg`, negative or non-finite counts, durations that are
   not positive, or so few counts that a test would have an expected
-  count below `min_expected` (default 5);
+  count below `min_expected` (default 5; `method="monte_carlo"` needs
+  no such count, from 0.16.0, example 26);
 - `bayesian_g2` gets a histogram of the wrong length, negative or
   non-finite counts, a grid with no bin centered on zero, an even or
   too-wide central window, an empty reference window, windows that
@@ -1573,9 +1677,40 @@ explicitly)
   or a blinking probability outside [0, 1];
 - `load_fisequr` is not given an existing data directory.
 
+From 0.16.0 also these, which up to 0.15.0 were taken as given: most
+gave a wrong answer without a word, a few an unrelated error (the
+"Corrections" section and the changelog say what each gave):
+
+- `HBTConfig` with a `tau_max` that is not positive and finite, an
+  `n_bins` that is not a whole number of at least 1, or a `sigma_irf`
+  that is negative or not finite;
+- a `threshold` that is not finite (`analyze_histogram`,
+  `analyze_pulsed`, `G2Posterior.prob_below`) or not positive and
+  finite (`expected_posterior`, `certification_probability` and the two
+  planners); a Gamma prior that is not finite (`bayesian_g2`,
+  `certification_probability`); `WindowSPRT` values `g_accept` or
+  `g_reject` that are not finite; `site_from_numbers` with
+  `n_emitters=True`;
+- `profile_likelihood_ci` with a `g2_max` that is not positive;
+  `goodness_of_fit` with an `n_boot` that is not a whole number of at
+  least 1; `fit_model` with an `n_shoulders` that is not a whole number
+  of at least 0;
+- `expected_histogram` with a negative or non-finite `T_s`;
+  `simulate_photon_stream` with a `T_s` that is not positive;
+  `deadtime_throughput` with a negative or non-finite dead time or rate;
+  `normalize_g2` with click counts that are not finite;
+- `expected_hist_pulsed` with a `g2_0` or `bg_frac` that is negative, a
+  `rate_cps` or `T_s` that is not positive, an `a` below -1 or a `tau2`
+  that is not positive (all must be finite); `fit_pulsed` with a
+  `center` outside the record or not finite;
+- `fit_saturation` with an `overdispersion` that is not True or False;
+  `check_stationarity` with an unknown `method`, and with
+  `method="monte_carlo"` an `n_sim` below 1 or counts that are not
+  whole.
+
 ## How the results are checked
 
-254 automated tests run on every push to `main` and every pull
+274 automated tests run on every push to `main` and every pull
 request. In CI they run on Python 3.10, 3.11, 3.12, 3.13 and 3.14 with
 CPU PyTorch; once more on Python 3.14 without PyTorch, where the
 machine-learning test files are skipped; and once more on Python 3.10
@@ -1920,6 +2055,46 @@ fixes** (new in 0.15.0)
   bootstrap `ci` outside (0, 1) and a signal rate the photon simulator
   cannot give are refused.
 
+**Overdispersed saturation scans, simulated stationarity p-values,
+speed and the fixes** (new in 0.16.0)
+
+- `fit_saturation(overdispersion=True)`: the dispersion equals the
+  Pearson sum recomputed from the returned means (to 1e-12); the fit
+  itself is that of the Poisson fit (to 1e-9, measured 6e-14); at both
+  ends of the widened `P_sat` interval an independent Nelder-Mead
+  profile puts the deviance at the dispersion times the F(1, 6)
+  quantile (to 1.4e-7). Of 100 simulated scans whose
+  counts scatter 4 times more than Poisson counts, the widened 95 %
+  intervals held the true `P_sat` in 93 and the Poisson ones in 65; of
+  40 scans with a 1 % drift from point to point, 38 and 19. Done once
+  outside the test suite (400 scans each, `P_sat`): 381 and 263 (4
+  times Poisson), 391 and 148 (1 % drift), 387 and 58 (3 % drift), and
+  396 and 381 for plain Poisson counts; for `R_inf` (200 scans each):
+  193 and 135 (4 times Poisson), 188 and 61 (1 % drift), 199 and 194
+  (Poisson).
+- `check_stationarity(method="monte_carlo")`: its simulated p-values
+  agree with exact sums over every possible outcome (the multinomial
+  law of the snapshot totals; the multiple hypergeometric law of a
+  2 x 3 and a 3 x 3 table) within 0.19, 0.69 and 0.25 standard errors
+  of the simulation (40 000 draws); over 200 steady series of five
+  0.3 s snapshots (about 0.2 counts expected in each zero-delay bin),
+  which the chi-square law refuses, at most 7 % of each test's p-values
+  fell below 0.05; a pair that takes part from the fourth of six 2 s
+  snapshots is flagged (window p < 0.01) in 20 of 40 runs, of which
+  the chi-square law refuses 39; with many counts (example 19) the
+  p-values agree with the chi-square ones within 0.004.
+- Speed with the same results: the jitter blur equals the 0.15.0 code
+  bit for bit on 40 sets of delays, lifetimes and jitters (scalars,
+  arrays and broadcast arrays, lifetimes far below the jitter);
+  `profile_likelihood_ci` gives the 0.15.0 interval of example 3 to
+  3.5e-6, the gradient it gives its search equals central differences
+  of its objective (relative error 3e-6, at 20 random points), and the
+  independent Nelder-Mead checks of 0.12.0 pass.
+- Fixes, each with a test that fails on 0.15.0: the inputs listed under
+  "Corrections" are refused, a correlator bin of 16 785 409 pairs keeps
+  its count, and `g2_three_level` takes an array of shelving times
+  (each entry equal to the scalar result).
+
 **Machine learning**
 
 - An untrained convolutional or spiking network has a balanced
@@ -1949,7 +2124,35 @@ figures of the manuscript, and `load_fisequr` on the real data set.
 
 ## Corrections in earlier versions
 
-**0.15.0 (this release) corrects these.**
+**0.16.0 (this release) corrects these.**
+
+- **Inputs that gave silent nonsense.** Up to 0.15.0 these were taken
+  as given: `HBTConfig(tau_max=-60.5)` gave bins of negative width and
+  `HBTConfig(sigma_irf=-0.3)` a model without jitter; a NaN
+  `threshold` gave a verdict probability of 0 in `expected_posterior`
+  and `certification_probability`, called every site not single in
+  `analyze_histogram`, and made `required_acquisition_time` blame the
+  confidence; a NaN Gamma prior made every result of `bayesian_g2`
+  NaN; `WindowSPRT(g_reject=np.inf)` never decided (its evidence was
+  NaN); `profile_likelihood_ci(g2_max=0)` returned an interval of NaN;
+  `deadtime_throughput` with a dead time of -45 ns raised 100 kcps to
+  100.4 kcps; `expected_histogram` with a negative time and
+  `expected_hist_pulsed` with `g2_0=-1` gave negative mean counts;
+  `normalize_g2` with an infinite click count gave g2 = 0 in every
+  bin; `fit_pulsed` with a center outside the record fitted the wrong
+  peak (g2(0) 0.29 for a true 0.12); `goodness_of_fit(n_boot=0)`
+  returned the p-value 1.0; `fit_model` took `n_shoulders=-1` as 0.
+  All are now refused with a message that says why (see "When it
+  refuses").
+- **Correlator counts above 2^24.** `correlate` and
+  `correlate_start_stop` returned float32, which holds whole numbers
+  exactly only up to 16 777 216: a bin with more pairs (a long run at
+  high rates) was rounded, 16 785 409 pairs to 16 785 408. Such a
+  histogram is now float64; every other histogram is float32 as before.
+- **`g2_three_level` with an array of shelving times** failed ("The
+  truth value of an array ... is ambiguous"); it now takes one.
+
+**0.15.0 corrected these.**
 
 - **The pulsed analysis at high laser rates.** Before the comb fit,
   `calibrate_comb` places the comb with windows of +-1.5 ns and +-3 ns,
@@ -2073,7 +2276,7 @@ figures of the manuscript, and `load_fisequr` on the real data set.
   in a bin, but the simulator and the fits used g2 at the bin center.
   On noise-free 1 ns bins of the README's site the fit then gave
   g2(0) = 0.086 instead of 0.0975. Both now average over the bin
-  (`HBTConfig(bin_average=False)` restores the old behaviour).
+  (`HBTConfig(bin_average=False)` restores the old behavior).
 - **Re-binning.** Putting each input bin whole into one grid bin gave a
   ripple (for 0.3 ns input bins, grid bins of 3 and 4 input bins) and,
   even for 0.5 ns bins, a zero-delay bin centered 0.25 ns off the dip.
@@ -2130,7 +2333,7 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 ## Limits
 
 - Fits describe the three-level dip, several shoulders, or a
-  coherently driven two-level emitter. Other shapes are not modelled;
+  coherently driven two-level emitter. Other shapes are not modeled;
   the fit p-value shows when a model does not describe the data, but
   cannot say which model would.
 - A histogram alone pins g2(0) only loosely when the shoulder is slow
@@ -2154,7 +2357,7 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   cover the analysis window around the dip.
 - The fit p-value of `analyze_histogram` is approximate and errs on the
   large side; `fit_model` on native bins gives a calibrated one. Split re-binning makes
-  neighbouring grid bins share input bins, so the Poisson-count tools
+  neighboring grid bins share input bins, so the Poisson-count tools
   (`bayesian_g2`, `fit_model`, `bayesian_g2_model`, `WindowSPRT`)
   should get native bins or bins merged whole.
 - `bayesian_g2` and `WindowSPRT` work with the window-averaged g2, an
@@ -2177,31 +2380,42 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   leaves the jitter out of the afterpulse terms. The analysis tools
   do not model afterpulsing: like background light, it raises the
   measured g2(0).
-- `profile_likelihood_ci` takes about 10 s for a 121-bin histogram.
+- `profile_likelihood_ci` takes about 2 s for a 121-bin histogram on a
+  busy 2-core machine (about 8 s up to 0.15.0, on the same machine).
   Its interval is that of the three-level model within the search
   ranges; when a nuisance parameter ends on a range limit (a warning
   says so), check the interval with a wider range, as in example 3.
 - `fit_model` is a local search. When a model fits badly its
   likelihood has several minima, and which one the search ends in
   depends on the SciPy version (example 10: deviance 345.74 with SciPy
-  1.18, 348.81 with SciPy 1.10). The p-value is then too small, which
-  does not change a clear rejection. Its interval for g2(0) (`level`)
-  belongs to the chosen model, and it is followed outward from the best
-  fit by local searches too.
+  1.18, 348.81 with SciPy 1.10). Neither is the best: from 60 random
+  starts the three-level fit of example 10 reached a deviance of 313.40
+  with g2(0) = 0.68 (the two lifetimes nearly equal, a = 436). The
+  p-value is then too small, which does not change a clear rejection,
+  and the g2(0) of a rejected model means nothing. Its interval for
+  g2(0) (`level`) belongs to the chosen model, and it is followed
+  outward from the best fit by local searches too.
 - `check_stationarity` uses the chi-square law of its statistics, which
   needs at least about 5 expected counts per cell; it refuses smaller
-  counts instead of guessing. It tells that the source changed, not
-  how, and a change slower than the whole run, or faster than one
-  snapshot, is not seen.
+  counts instead of guessing. With `method="monte_carlo"` it needs no
+  such count, but its p-values are random to within about
+  sqrt(p (1 - p) / n_sim), and with few counts it often misses a
+  change (example 26: 23 of 40 runs flagged). It tells that the source
+  changed, not how, and a change slower than the whole run, or faster
+  than one snapshot, is not seen.
 - The rho interval of `signal_fraction_from_counts` assumes that the
   background beside the emitter equals the background on it.
 - `fit_saturation` assumes the curve `R_inf P/(P + P_sat) + b P + d`
   (continuous excitation, a pump rate proportional to the power, and
   background light proportional to the power) and Poisson counts. Its
   intervals are too narrow when the points scatter more than that, for
-  example from a drifting focus; a small p-value warns of it. `P_sat`
-  and `R_inf` are bounded only when the powers reach well into
-  saturation.
+  example from a drifting focus; a small p-value warns of it, and
+  `overdispersion=True` widens them by the scatter measured about the
+  fit (example 25). That assumes the same extra scatter factor at every
+  power; a drift adds scatter that grows with the counts, so the
+  widened intervals are close to, not exactly at, their stated level
+  (in simulations 94 % to 98 % for a 95 % interval). `P_sat` and
+  `R_inf` are bounded only when the powers reach well into saturation.
 - `window_g2_ci` and `count_ratio_ci` give exact but conservative
   intervals (they cover at least as often as the level says), and like
   `bayesian_g2` they are for the window g2, an upper bound on g2(0)
@@ -2217,7 +2431,11 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   intervals (record it with many more counts than the decay). High
   count rates (more than one photon per laser
   period now and then, detector dead time) distort a TCSPC histogram;
-  this is not modeled. A decay much longer than the period looks flat
+  this is not modeled, because the correction depends on the number of
+  photons per pulse (a single emitter gives at most one, many
+  emitters together close to a Poisson number) and on the detector's
+  dead time, which the histogram does not give. A decay much longer
+  than the period looks flat
   and is taken for background, and one much shorter than the jitter
   cannot be told apart from it: the interval is then open on that side
   and a warning is issued. The decay's rise must be in the record. The

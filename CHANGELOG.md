@@ -1,5 +1,181 @@
 # Changelog
 
+## 0.16.0 (2026-11-25)
+
+Saturation intervals that stay honest when the counts scatter more
+than Poisson counts, a stationarity check that works with few counts,
+a faster jitter blur and profile-likelihood interval with the same
+results, and refusals for inputs that gave wrong answers without a
+word.
+
+### Added
+
+- `fit_saturation(..., overdispersion=True)`: intervals for `R_inf` and
+  `P_sat` that allow for counts whose variance is a fixed factor phi
+  times their mean (a focus or laser power that drifts during the
+  scan). phi is the Pearson sum sum (n - mu)^2 / mu over the points
+  divided by the degrees of freedom, taken as at least 1, and the
+  intervals are where the profile deviance stays below phi times the
+  F(1, dof) quantile instead of the chi-square(1) quantile. The fit
+  itself does not change. Every result now also holds `dispersion`
+  (the Pearson estimate of phi) and `dispersion_used` (1.0 without the
+  option). No literature value is used. Checked: the dispersion equals
+  the Pearson sum recomputed from the returned means (1e-12); an
+  independent Nelder-Mead profile puts the deviance at both interval
+  ends at phi times the F quantile (to 1.4e-7); of 100 simulated
+  scans whose counts scatter 4 times more than Poisson counts, the
+  widened 95 % intervals for `P_sat` held the truth in 93, the Poisson
+  ones in 65; with a 1 % drift, 38 and 19 of 40 (done once outside the
+  suite, 400 scans each: 381 and 263, 391 and 148, and 387 and 58 with
+  a 3 % drift; 396 and 381 with plain Poisson counts; `R_inf`, 200
+  each: 193 and 135, 188 and 61, 199 and 194). README example 25.
+- `check_stationarity(..., method="monte_carlo", n_sim=2000, seed=0)`:
+  p-values by simulation, for snapshots with fewer counts than the
+  chi-square law needs (which "chi2", still the default, refuses). The
+  snapshot totals are drawn from their multinomial law given their sum,
+  the window and shape tables from the multiple hypergeometric law of
+  a table with fixed row and column sums (row by row with NumPy's
+  `multivariate_hypergeometric`), and p = (1 + count) / (1 + n_sim).
+  The result also holds `method`. Checked against exact sums over every
+  outcome (a multinomial and two small tables: within 0.19, 0.69 and
+  0.25 standard errors of 40 000 draws); over 200 steady series that
+  the chi-square law refuses, at most 7 % of each test's p-values fall
+  below 0.05; a pair that takes part from the fourth of six 2 s
+  snapshots is flagged at p < 0.01 in 20 of 40 runs (the chi-square law
+  refuses 39); with many counts the p-values match the chi-square ones
+  within 0.004. README example 26.
+
+### Changed
+
+- `correlate` and `correlate_start_stop` return float64 for a histogram
+  with a bin of more than 2^24 = 16 777 216 pairs, which float32 cannot
+  hold exactly (see Fixed); every other histogram is float32 as before,
+  so all earlier results are unchanged.
+- Faster, with the same results:
+  - the jitter blur (`sparq.physics._exp_conv_gauss`, used by the fits,
+    the simulator and the sampler) evaluates erfcx once per term
+    instead of twice, and skips exponentials that underflow to 0 (they
+    are several times slower to evaluate than others). The numbers are
+    the same bit for bit (tested against the 0.15.0 code on 40 sets of
+    inputs). On this machine (2 CPUs shared with other jobs; CPU time,
+    median of 15 interleaved rounds) one call at the 968 delays of the
+    default grid takes 46 to 61 us instead of 60 to 73 us (1.2 to 1.3
+    times faster); README example 1 with 30 bootstrap redraws, whose
+    fits call it most, takes 4.9 s instead of 6.2 s (median of three
+    interleaved runs).
+  - `profile_likelihood_ci` sets the flat-level scale c0 to its best
+    value for each shape, a closed form (H / S, or with the prior the
+    positive root of c0^2 + (S sd^2 - m) c0 - H sd^2 = 0, held within
+    0.01 to 10), instead of searching it, and gives the search the
+    gradient (at the best c0 a small change of c0 leaves the likelihood
+    unchanged, so the gradient is that at fixed c0; the derivative of
+    the blur in the lifetime by central differences). The interval of
+    README example 3 is the 0.15.0 one to 3.5e-6, and the gradient
+    equals central differences of the objective (relative error 3e-6,
+    test `test_profile_gradient_matches_central_differences`). Its two
+    intervals (flat level free and pinned) take 3.7 s instead of 16.6 s
+    (4.5 times faster; median of three interleaved runs on the same
+    machine).
+- New refusals for inputs that gave silent nonsense (see Fixed and the
+  README section "When it refuses").
+- README: examples 25 and 26; the "Limits" entries on the saturation
+  fit, the stationarity check and the time of `profile_likelihood_ci`.
+  All 24 earlier examples and the three tutorials were rerun and print
+  exactly what they printed with 0.15.0.
+- Tutorials: the docstrings name 0.16.0; their printed numbers are
+  unchanged.
+
+### Fixed
+
+Each with a test in `tests/test_release_016.py` that fails on 0.15.0.
+
+- **Inputs taken as given.** `HBTConfig(tau_max=-60.5)` gave bins of
+  negative width, `HBTConfig(sigma_irf=-0.3)` a model without jitter
+  and `HBTConfig(n_bins=0)` a division by zero; now refused (a
+  whole-number float `n_bins` such as 121.0 becomes an int). A NaN
+  `threshold` gave a verdict probability of 0 in `expected_posterior`
+  and `certification_probability`, a refusal from
+  `required_acquisition_time` that blamed the confidence, and "not
+  single" for every site in `analyze_histogram` and `analyze_pulsed`;
+  a NaN or infinite Gamma prior made every `bayesian_g2` result NaN;
+  `G2Posterior.prob_below(nan)` returned 0. `WindowSPRT(g_reject=inf)`
+  never decided (the evidence was NaN). `profile_likelihood_ci` with
+  `g2_max <= 0` returned NaN ends. `deadtime_throughput` with a
+  negative dead time raised the rate (100 kcps to 100.4 kcps at
+  -45 ns). `expected_histogram` with a negative time, and
+  `expected_hist_pulsed` with `g2_0 = -1` (a bin of -64) or a negative
+  rate, gave negative or meaningless means; `expected_hist_pulsed` now
+  also refuses a negative `bg_frac`, an `a` below -1 and a `tau2` that
+  is not positive. `simulate_photon_stream` with a negative time failed
+  with "need at least one array to concatenate". `normalize_g2` with an
+  infinite click count returned g2 = 0 everywhere. `fit_pulsed` with a
+  NaN `center` failed with "cannot convert float NaN to integer", and
+  with a center outside the record fitted the wrong peak (g2(0) 0.29
+  for a true 0.12). `goodness_of_fit(n_boot=0)` returned the p-value
+  1.0. `fit_model("multi_exponential", n_shoulders=-1)` fitted no
+  shoulder. `site_from_numbers(n_emitters=True)` made one emitter.
+  Tests `test_window_sprt_refuses_an_infinite_reject_value`,
+  `test_bayesian_prior_and_threshold_must_be_finite`,
+  `test_analysis_thresholds_and_profile_grid_are_checked`,
+  `test_grid_and_simulator_inputs_are_checked`,
+  `test_normalization_and_pulsed_inputs_are_checked` and
+  `test_model_fit_options_are_checked`.
+- **Correlator counts above 2^24.** float32 holds whole numbers
+  exactly only up to 16 777 216, so a correlator bin with more pairs
+  (for example a one-hour run at 1 Mcps per detector in 10 ns bins)
+  was rounded: 4097 x 4097 = 16 785 409 pairs in one bin read
+  16 785 408. Test
+  `test_correlator_keeps_counts_above_float32_precision`.
+- **`g2_three_level` with an array of `tau2`** failed with "The truth
+  value of an array with more than one element is ambiguous" (the
+  built-in `max`); each entry now equals the scalar result. Test
+  `test_g2_three_level_takes_an_array_of_shelving_times`.
+
+### Not included
+
+- Pile-up of TCSPC histograms at high count rates (README limits of
+  `fit_lifetime`). When the first photon of a laser period hides the
+  later ones, how much it hides depends on the number of photons per
+  pulse: for Poisson numbers the loss follows from the counts alone,
+  but a single emitter gives at most one photon per pulse, and then a
+  correction worked out for Poisson numbers is wrong. Detector dead
+  time longer than the period also mixes in earlier periods. A correct
+  treatment needs the photon statistics of the source and the
+  detector's dead time as inputs; it is left out rather than offered
+  with an assumption that does not hold for the package's main use.
+- The counting noise of a measured instrument response in the
+  intervals of `fit_lifetime(irf=...)`: it would need every response
+  bin as a parameter of the fit; record the response with many more
+  counts than the decay instead.
+- A global search in `fit_model`. On a model that fits badly it still
+  ends in a local minimum that depends on the SciPy version (README
+  example 10, three-level fit: deviance 345.74 with SciPy 1.18 at
+  tau1 0.69 ns, tau2 0.70 ns, a = 64; 348.81 with SciPy 1.10 at
+  tau1 0.55 ns, tau2 0.90 ns, a = 1.4), and neither is the best: from
+  60 random starts the lowest deviance found was 313.40, with
+  g2(0) = 0.68 at tau1 0.124 ns, tau2 0.122 ns, a = 436 (two nearly
+  equal lifetimes with a large a). Every one of these
+  fits is rejected by its p-value, and the g2(0) of a rejected model
+  means nothing, so the default search was left as it is rather than
+  tuned to this example; the README limits now say so.
+- Afterpulsing in the analysis tools, a shape change of g2 by dead
+  time in the fast simulator, dead time in the heralded-source model,
+  and asymmetric detector jitter in the dip refinement: each needs a
+  model of the detectors (afterpulse probability and delays, how a
+  detector recovers, the timing response of each detector) that the
+  histogram alone does not give; none was added in this release, and
+  they stay in the README limits.
+- PTU files recorded on hardware: none was available to test with, so
+  the reader is still checked on files written from PicoQuant's format
+  description.
+- The coverage of the comb fit's 95 % intervals (91 % to 94 % in
+  simulations) was not worked on in this release.
+
+### Checks (tests)
+
+- 274 tests (254 before): test_release_016 (20). The new tests run on
+  NumPy 1.24.0 and SciPy 1.10.0 as well.
+
 ## 0.15.0 (2026-11-10)
 
 Fits lifetimes with a measured instrument response of any shape, gives
@@ -492,7 +668,7 @@ inputs that gave wrong or cryptic results are refused.
   side-peak area from the detectors' count rates. In simulated runs
   (done once, outside the test suite) the 95 % intervals covered the
   truth in 91 % to 94 % of runs.
-- `analyze_pulsed(method=...)`: "fit" (new default, see Behaviour
+- `analyze_pulsed(method=...)`: "fit" (new default, see Behavior
   changes) or "area" (the 0.10.0 method); `envelope`, `T_s`,
   `singles_cps`, `sigma_pair` are passed to the fit.
 - `expected_histogram(afterpulse_p=, afterpulse_tau_ns=)`:
@@ -533,7 +709,7 @@ inputs that gave wrong or cryptic results are refused.
   non-finite `T_s` or `r_hat`. Valid inputs are passed on unchanged
   (the histogram keeps its data type), so their fits do not change.
 
-### Behaviour changes
+### Behavior changes
 
 - `analyze_pulsed` now fits the comb by default. Before/after on
   noise-free 80 MHz data with true g2(0) = 0.12: 0.1035 -> 0.1200
@@ -656,7 +832,7 @@ that were wrong without an error.
 - `train_model` and `DiscreteSAC.update` no longer warn when turning
   losses into numbers.
 
-### Changed behaviour to note
+### Changed behavior to note
 
 - `heralded_g2_limit(car, "thermal")` refuses a raw CAR below 2 (a
   single-mode source cannot give one); 0.9.1 accepted any CAR >= 1.
