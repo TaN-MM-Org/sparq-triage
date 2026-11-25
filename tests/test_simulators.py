@@ -5,7 +5,7 @@ emitter, gates it with an on/off blinking process, adds background and
 runs each detector's dead time; the fast simulator writes the mean
 histogram down in closed form. They are independent code paths, so a
 Poisson chi-square test between them checks both. Each check is also
-run against the 0.9.1 behaviour to show that the test can tell the
+run against the 0.9.1 behavior to show that the test can tell the
 difference.
 """
 import numpy as np

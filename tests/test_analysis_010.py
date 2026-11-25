@@ -192,7 +192,7 @@ def test_fit_on_a_bound_is_reported_and_auto_widens():
 
 def test_fit_p_value_is_roughly_calibrated_and_conservative():
     """The fit's error bars are the re-binned bins' own variance (smaller
-    than their counts). Neighbouring split bins share input bins, which
+    than their counts). Neighboring split bins share input bins, which
     the chi-square ignores, so the p-value comes out somewhat too large:
     small p-values are not more common than they should be."""
     site = _site()
@@ -243,7 +243,7 @@ def test_window_beyond_the_data_is_refused():
 def test_narrow_dip_inside_a_bunching_peak_is_found():
     """tau1 = 0.2 ns in 1 ns bins with a strong 5 ns shoulder: the
     zero-delay bin sits barely above the flat level, far below its
-    neighbours. The 0.9.1 smoothed minimum (still used by
+    neighbors. The 0.9.1 smoothed minimum (still used by
     method="whole") puts the dip tens of ns away (here refused, as its
     window no longer fits the data); the symmetry choice finds it, and
     the fit recovers g2(0)."""
