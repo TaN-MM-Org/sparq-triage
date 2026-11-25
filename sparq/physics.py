@@ -46,7 +46,10 @@ from scipy.special import erf, erfcx  # noqa: F401 (erf kept for users)
 def g2_three_level(tau, tau1, tau2, a):
     """Ideal three-level CW g2(tau); tau in ns."""
     at = np.abs(tau)
-    return 1.0 - (1.0 + a) * np.exp(-at / tau1) + a * np.exp(-at / max(tau2, 1e-9))
+    # np.maximum (from 0.16.0): up to 0.15.0 the built-in max refused an
+    # array of tau2 values
+    return 1.0 - (1.0 + a) * np.exp(-at / tau1) + a * np.exp(
+        -at / np.maximum(tau2, 1e-9))
 
 
 def g2_measured(tau, tau1, tau2, a, n_emitters=1, rho=1.0, sigma_irf=0.0):
@@ -73,22 +76,48 @@ def _exp_conv_gauss(tau, T, s):
     all precision once T is below about s/7 and overflows to NaN far
     from zero delay (new in 0.10.0; T and tau may be arrays that
     broadcast).
+
+    From 0.16.0 erfcx is evaluated once per term, at |u|, and the
+    exponential only where u < 0. Up to 0.15.0 both branches were
+    computed everywhere and one was thrown away. The numbers are the
+    same bit for bit (the same functions at the same arguments; the
+    tests compare with the 0.15.0 code), and a call takes about a
+    fifth less time.
     """
     tau = np.asarray(tau, dtype=float)
     if s <= 1e-12:
         return np.exp(-np.abs(tau) / T)
     T = np.asarray(T, dtype=float)
     z = s / T
-    g = np.exp(-0.5 * (tau / s) ** 2)
-    out = 0.0
-    for sg in (1.0, -1.0):
-        u = (z - sg * tau / s) / np.sqrt(2.0)
-        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-            pos = g * erfcx(u)
-            neg = (2.0 * np.exp(0.5 * z ** 2 - sg * tau / T)
-                   - g * erfcx(-u))
-        out = out + 0.5 * np.where(u >= 0.0, pos, neg)
+    g = _exp_or_zero(-0.5 * (tau / s) ** 2)
+    q = tau / s
+    terms = []
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        for sg in (1.0, -1.0):
+            # (z - sg tau/s)/sqrt2, and in the exponent 0.5 z^2 - sg tau/T
+            u = np.asarray(((z - q) if sg > 0 else (z + q)) / np.sqrt(2.0))
+            term = np.array(g * erfcx(np.abs(u)), dtype=float)
+            neg = u < 0.0
+            if neg.any():
+                h = 0.5 * z ** 2
+                arg = (h - tau / T) if sg > 0 else (h + tau / T)
+                term[neg] = (2.0 * _exp_or_zero(
+                    np.broadcast_to(arg, u.shape)[neg]) - term[neg])
+            terms.append(term)
+    out = 0.5 * terms[0] + 0.5 * terms[1]
     return np.clip(out, 0.0, 1.0)
+
+
+def _exp_or_zero(x):
+    """np.exp(x), with the entries below -746 (where exp is exactly 0 in
+    double precision) set to 0 without calling exp: an exponential that
+    underflows takes several times longer to evaluate. The same numbers
+    as np.exp, NaN included."""
+    x = np.asarray(x, dtype=float)
+    out = np.zeros(x.shape)
+    m = ~(x < -746.0)
+    out[m] = np.exp(x[m])
+    return out
 
 
 def g2_zero(tau1, tau2, a, n_emitters=1, rho=1.0):
@@ -277,6 +306,36 @@ class HBTConfig:
     sigma_irf: float = 0.35      # ns, per-detector IRF sigma (~0.8 ns FWHM)
     bin_average: bool = True
 
+    def __post_init__(self):
+        """Refuses a grid that cannot be meant (from 0.16.0): tau_max not
+        positive and finite, n_bins not a whole number of at least 1, or
+        sigma_irf negative or not finite. Up to 0.15.0 these were taken
+        as given: a negative tau_max gave bins of negative width, and a
+        negative sigma_irf a model without jitter, both without a word.
+        A whole-number float n_bins (121.0) is turned into an int."""
+        try:
+            tm = float(self.tau_max)
+            sg = float(self.sigma_irf)
+        except (TypeError, ValueError):
+            raise ValueError("tau_max and sigma_irf must be numbers (ns)") \
+                from None
+        if not (np.isfinite(tm) and tm > 0.0):
+            raise ValueError(f"tau_max must be positive and finite (ns); "
+                             f"got {self.tau_max!r}")
+        if not (np.isfinite(sg) and sg >= 0.0):
+            raise ValueError(f"sigma_irf must be finite and >= 0 (ns); got "
+                             f"{self.sigma_irf!r}")
+        n = self.n_bins
+        if isinstance(n, (bool, np.bool_)) or not (
+                isinstance(n, (int, np.integer))
+                or (isinstance(n, (float, np.floating)) and np.isfinite(n)
+                    and float(n) == np.floor(n))):
+            raise ValueError(f"n_bins must be a whole number; got {n!r}")
+        if int(n) < 1:
+            raise ValueError(f"n_bins must be at least 1; got {n!r}")
+        if isinstance(n, (float, np.floating)):
+            self.n_bins = int(n)
+
     @property
     def bin_width(self):
         return 2 * self.tau_max / self.n_bins
@@ -340,7 +399,7 @@ def expected_histogram(site: EmitterSite, T_s: float, cfg: HBTConfig,
     dead_time_ns (new in 0.10.0): non-paralyzable dead time of each
     detector. It lowers each detector's counted rate (see
     `deadtime_throughput`) and so the flat level. Any change it makes
-    to the shape of g2 is not modelled; in the tests the result agrees
+    to the shape of g2 is not modeled; in the tests the result agrees
     with the photon-by-photon simulation (45 ns dead time, 300 kcps per
     detector) within Poisson noise.
 
@@ -365,6 +424,9 @@ def expected_histogram(site: EmitterSite, T_s: float, cfg: HBTConfig,
     td = float(dead_time_ns)
     if td < 0 or not np.isfinite(td):
         raise ValueError("dead_time_ns must be finite and >= 0")
+    # from 0.16.0; up to 0.15.0 a negative time gave negative means
+    if not (np.isfinite(float(T_s)) and float(T_s) >= 0.0):
+        raise ValueError(f"T_s must be finite and >= 0 (s); got {T_s!r}")
     p_ap = float(afterpulse_p)
     t_ap = float(afterpulse_tau_ns)
     if not (np.isfinite(p_ap) and 0.0 <= p_ap <= 1.0):
@@ -485,6 +547,12 @@ def deadtime_throughput(site: EmitterSite, rate_cps: float,
     """
     r = float(rate_cps)
     td = float(dead_time_ns)
+    # from 0.16.0; up to 0.15.0 a negative dead time raised the rate
+    # (100 kcps became 100.4 kcps at -45 ns) without a word
+    if not (np.isfinite(td) and td >= 0.0):
+        raise ValueError("dead_time_ns must be finite and >= 0")
+    if not (np.isfinite(r) and r >= 0.0):
+        raise ValueError("rate_cps must be finite and >= 0")
     if td == 0.0:
         return r
     t = np.linspace(0.0, td, 4001)
@@ -615,6 +683,10 @@ def simulate_photon_stream(site: EmitterSite, T_s: float,
     5e7 counts/s, it gave 1.2e7.
     """
     p = site.params
+    # from 0.16.0; up to 0.15.0 a negative time failed with "need at
+    # least one array to concatenate"
+    if not (np.isfinite(float(T_s)) and float(T_s) > 0.0):
+        raise ValueError(f"T_s must be positive and finite (s); got {T_s!r}")
     rates = _site_rates(p["tau1"], p["tau2"], p["a"])
     # collection efficiency chosen to hit the site's detected signal rate
     # (from the exact steady-state emission rate, new in 0.10.0)
@@ -737,6 +809,12 @@ def correlate(t_a, t_b, cfg: HBTConfig) -> np.ndarray:
     From 0.13.0 the pairs are formed without a Python loop over t_a,
     in blocks of about a million pairs; the histogram is the same count
     for count as up to 0.12.1 (the tests compare with the 0.12.1 loop).
+
+    The counts are float32, as before, while every bin holds at most
+    2^24 = 16 777 216 pairs, the largest count float32 holds exactly;
+    a histogram with a fuller bin (a long run at high rates) is float64
+    (from 0.16.0, `_exact_counts`). Up to 0.15.0 it was float32 anyway,
+    and such a bin was rounded: 16 785 409 pairs read 16 785 408.
     """
     t_a = np.asarray(t_a, dtype=float)
     t_b = np.asarray(t_b, dtype=float)
@@ -772,4 +850,17 @@ def correlate(t_a, t_b, cfg: HBTConfig) -> np.ndarray:
                                 range=(-cfg.tau_max, cfg.tau_max))
             counts += h
         start = stop
+    return _exact_counts(counts)
+
+
+_F32_EXACT = 1 << 24      # float32 holds every whole number up to this
+
+
+def _exact_counts(counts):
+    """Whole-number counts as float32 (the type the correlators have
+    always returned) when every count fits exactly, else as float64 (new
+    in 0.16.0; up to 0.15.0 a count above 2^24 was rounded to float32)."""
+    counts = np.asarray(counts)
+    if counts.size and counts.max() > _F32_EXACT:
+        return counts.astype(np.float64)
     return counts.astype(np.float32)

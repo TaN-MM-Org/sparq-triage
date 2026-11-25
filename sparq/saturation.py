@@ -25,7 +25,9 @@ detectors add dark counts, so the measured rate is
 their Poisson likelihood and gives profile-likelihood intervals for
 R_inf and P_sat. The curve is that of continuous-wave excitation in
 this rate model; for data of another shape the fit's p-value says
-that the curve does not describe them.
+that the curve does not describe them. Counts that scatter more than
+Poisson counts, for example from a drifting focus, get intervals that
+allow for it with `overdispersion=True` (new in 0.16.0).
 """
 from __future__ import annotations
 
@@ -68,8 +70,8 @@ def saturation_from_rates(k_r: float, k_es: float, k_se: float) -> dict:
 
 
 def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
-                   level: float = 0.95, interval: str | None = "both"
-                   ) -> dict:
+                   level: float = 0.95, interval: str | None = "both",
+                   overdispersion: bool = False) -> dict:
     """Fit a saturation curve to counts measured at several excitation
     powers (new in 0.13.0).
 
@@ -84,6 +86,21 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
     level : confidence level of the intervals.
     interval : "both" (default), "P_sat" (only the P_sat interval, which
         is quick; the R_inf ends are then NaN) or None (no intervals).
+    overdispersion : False (default): the counts are taken as Poisson.
+        True (new in 0.16.0): the counts may scatter more than Poisson
+        counts, by a factor that is the same at every power (their
+        variance is phi times their mean), for example from a focus or a
+        laser power that drifts during the scan. phi is estimated from
+        the scatter about the fit, as the Pearson sum
+        sum (n - mu)^2 / mu over the points divided by the degrees of
+        freedom (points minus fitted parameters), and taken as at least
+        1. The intervals are then where the profile deviance stays below
+        phi times the quantile of the F distribution with 1 and dof
+        degrees of freedom (instead of the chi-square(1) quantile), which
+        allows for phi being estimated from few points. With few points
+        this widens the intervals even when the counts are Poisson (by
+        sqrt(5.99 / 3.84) = 1.25 for 6 degrees of freedom). The fit
+        itself (R_inf, P_sat, b, d) does not change.
 
     The counts are taken as Poisson; for a given P_sat the rate is
     linear in R_inf, b and d, which are then found exactly (a convex
@@ -109,14 +126,18 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
     `sparq.pulsed.fit_pulsed`; a small value says the curve does not
     describe the data, or the counts scatter more than Poisson counts,
     for example from a drifting focus, and the intervals are then too
-    narrow).
+    narrow unless `overdispersion` is True), and (new in 0.16.0)
+    dispersion, the Pearson estimate of phi (about 1 for Poisson counts;
+    NaN without degrees of freedom) and dispersion_used, the factor
+    the intervals were widened with (1.0 without `overdispersion`).
 
     Refuses (ValueError): powers or counts that are not finite, negative
     powers, counts that are negative or not whole, non-positive times,
     arrays of different lengths, fewer distinct powers than the curve
     has parameters plus one, no positive power, no counts, counts at
     zero power with background="none" (from 0.14.0), an unknown
-    `background` or `interval`, and a `level` outside (0, 1).
+    `background` or `interval`, a `level` outside (0, 1), and an
+    `overdispersion` that is not True or False (from 0.16.0).
     """
     from scipy.optimize import brentq, minimize_scalar
     from scipy.stats import chi2
@@ -141,6 +162,8 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
         raise ValueError("level must lie in (0, 1)")
     if interval not in ("both", "P_sat", None):
         raise ValueError('interval must be "both", "P_sat" or None')
+    if not isinstance(overdispersion, (bool, np.bool_)):
+        raise ValueError("overdispersion must be True or False")
     n_lin = {"linear": 3, "constant": 2, "none": 1}[background]
     if np.unique(P).size < n_lin + 2:
         raise ValueError(f"need at least {n_lin + 2} distinct powers for "
@@ -223,7 +246,23 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
     f_min, beta = solve(np.exp(s_hat))
     Ps_hat = float(np.exp(s_hat))
     R_hat = float(beta[0])
-    crit = float(chi2.ppf(level, 1))
+    n_free = n_lin + 1
+    dof = int(P.size - n_free)
+    # Pearson estimate of the dispersion phi (new in 0.16.0)
+    mu_hat = columns(Ps_hat) @ beta
+    live = mu_hat > 0
+    phi = (float(np.sum((n[live] - mu_hat[live]) ** 2 / mu_hat[live]))
+           / dof if dof > 0 else np.nan)
+    if overdispersion:
+        if dof <= 0:
+            raise ValueError("overdispersion needs more powers than "
+                             "fitted parameters")
+        from scipy.stats import f as f_dist
+        phi_used = max(phi, 1.0)
+        crit = phi_used * float(f_dist.ppf(level, 1, dof))
+    else:
+        phi_used = 1.0
+        crit = float(chi2.ppf(level, 1))
 
     # P_sat interval from the profile over the grid, refined by brentq
     def ex_s(s):
@@ -275,8 +314,6 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
     with np.errstate(divide="ignore", invalid="ignore"):
         rho = np.where(tot > 0, sig / tot, np.nan)
     dev = 2.0 * f_min
-    n_free = n_lin + 1
-    dof = int(P.size - n_free)
     if interval is None:
         saturated = None
     else:
@@ -293,7 +330,8 @@ def fit_saturation(power, counts, t_s=1.0, background: str = "linear",
                 saturated=saturated, signal_rate=sig, rho=rho, mu=mu,
                 deviance=float(dev), dof=dof,
                 p_value=_deviance_p_value(dev, mu, n_free) if dof > 0
-                else np.nan)
+                else np.nan,
+                dispersion=phi, dispersion_used=float(phi_used))
 
 
 def _half_deviance(h, mu):

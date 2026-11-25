@@ -293,6 +293,12 @@ def fit_model(hist, T_s: float, r_hat: float,
             raise ValueError(f"level must lie in (0, 1); got {level}")
     fixed = dict(fixed or {})
     if model == "multi_exponential":
+        # from 0.16.0; up to 0.15.0 a negative number was taken as 0
+        if isinstance(n_shoulders, bool) or not (
+                isinstance(n_shoulders, (int, np.integer))
+                and n_shoulders >= 0):
+            raise ValueError(f"n_shoulders must be a whole number >= 0; "
+                             f"got {n_shoulders!r}")
         names = ["tau1"]
         for k in range(1, int(n_shoulders) + 1):
             names += [f"a{k}", f"tau_b{k}"]
@@ -494,6 +500,11 @@ def goodness_of_fit(fit, n_boot=200, seed=0):
     """
     if not fit.get("ok"):
         raise ValueError("the fit failed; nothing to test")
+    # from 0.16.0; up to 0.15.0 n_boot = 0 returned the p-value 1.0
+    if isinstance(n_boot, bool) or not float(n_boot) >= 1 \
+            or float(n_boot) != np.floor(float(n_boot)):
+        raise ValueError(f"n_boot must be a whole number >= 1; got "
+                         f"{n_boot!r}")
     args = fit["_fit_args"]
     rng = np.random.default_rng(seed)
     start = [dict(fit["params"])]

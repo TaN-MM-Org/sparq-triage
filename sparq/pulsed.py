@@ -58,6 +58,19 @@ def expected_hist_pulsed(cfg: HBTConfig, T_s, rate_cps, g2_0, tau_e,
         raise ValueError("sigma_pair must be finite and >= 0 (ns)")
     if not np.isfinite(float(center_off)):
         raise ValueError("center_off must be finite (ns)")
+    # from 0.16.0; up to 0.15.0 these gave negative mean counts (g2_0 =
+    # -1: a bin of -64) or positive ones from a negative rate
+    for name, v in (("rate_cps", rate_cps), ("T_s", T_s)):
+        if not (np.isfinite(float(v)) and float(v) > 0.0):
+            raise ValueError(f"{name} must be positive and finite")
+    for name, v in (("g2_0", g2_0), ("bg_frac", bg_frac)):
+        if not (np.isfinite(float(v)) and float(v) >= 0.0):
+            raise ValueError(f"{name} must be finite and >= 0")
+    if not (np.isfinite(float(a)) and float(a) >= -1.0):
+        raise ValueError("a must be finite and >= -1 (side peaks of "
+                         "negative area otherwise)")
+    if not (np.isfinite(float(tau2)) and float(tau2) > 0.0):
+        raise ValueError("tau2 must be positive and finite (ns)")
     r_a = r_b = 0.5 * rate_cps
     A = r_a * r_b * (t_rep * 1e-9) * T_s          # counts per side peak
     tau = cfg.bin_centers - center_off
@@ -522,7 +535,14 @@ def fit_pulsed(delay, counts, t_rep=T_REP_NS, center=None, sigma_pair=None,
     if center is None:
         c0, _, _ = calibrate_comb(delay, h, t_rep=T)
     else:
+        # from 0.16.0: up to 0.15.0 a NaN center failed with "cannot
+        # convert float NaN to integer", and a center outside the record
+        # gave a fit of the wrong peak (g2(0) 0.29 for a true 0.12)
         c0 = float(center)
+        if not (np.isfinite(c0) and edges[0] <= c0 <= edges[-1]):
+            raise ValueError(f"center must be a delay inside the record "
+                             f"({edges[0]:.4g} to {edges[-1]:.4g} ns); "
+                             f"got {center!r}")
     basis = _CombBasis(edges, T)
     env = bool(envelope)
 

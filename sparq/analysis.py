@@ -96,6 +96,18 @@ def _check_ci(ci):
                          f"0.95, not a percentage); got {ci!r}")
 
 
+def _check_threshold(threshold):
+    """The single-emitter threshold must be a finite number (from
+    0.16.0; up to 0.15.0 a NaN threshold called every site not single,
+    without a word)."""
+    try:
+        t = float(threshold)
+    except (TypeError, ValueError):
+        raise ValueError("threshold must be a number") from None
+    if not np.isfinite(t):
+        raise ValueError(f"threshold must be finite; got {threshold!r}")
+
+
 def _near(x, bound, rtol=1e-3):
     return abs(np.log(x) - np.log(bound)) < rtol
 
@@ -436,7 +448,7 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
     fit's weighted residuals, with each re-binned bin's own Poisson
     variance as its error; a small value says the three-level model
     does not describe the dip -- try `sparq.models.fit_model` with
-    another model. It is approximate: it ignores that neighbouring
+    another model. It is approximate: it ignores that neighboring
     re-binned bins share input bins, and comes out somewhat too large;
     in 300 simulated runs 2 to 3 % fell below 0.05 instead of 5 %),
     dip_ambiguous (new in 0.10.0: True when the automatically located
@@ -476,6 +488,7 @@ def analyze_histogram(delay, counts, T_s, cfg: HBTConfig | None = None,
                          f"seconds; got {T_s!r}")
     if n_bootstrap and n_bootstrap > 0:
         _check_ci(ci)
+    _check_threshold(threshold)
     r_singles, c0_prior = None, None
     if singles_cps is not None:
         sc = np.atleast_1d(np.asarray(singles_cps, dtype=float))
@@ -607,6 +620,7 @@ def analyze_pulsed(delay, counts, t_rep: float = T_REP_NS,
         raise ValueError("delay and counts must be finite")
     if np.any(counts < 0):
         raise ValueError("counts must be non-negative")
+    _check_threshold(threshold)
     if method == "fit":
         want = bool(n_bootstrap and n_bootstrap > 0)
         fit = fit_pulsed(delay, counts, t_rep=t_rep, sigma_pair=sigma_pair,
@@ -712,7 +726,10 @@ def profile_likelihood_ci(hist, T_s: float, r_hat: float,
     is not empty).
 
     Accuracy (corrected in 0.12.0): the profile is minimized over
-    log tau1, log tau2, a and log c0, with the objective written as
+    log tau1, log tau2 and a, with c0 at its best value for each shape
+    (a closed form, within 0.01 to 10; from 0.16.0, before which log c0
+    was searched as well, for the same result in four times the time),
+    and with the objective written as
     half the Poisson deviance; the grid locates the minimum and the
     two crossings, and g2_hat, lo and hi are then refined between grid
     points (to about 1e-4). Up to 0.11.0 tau2 hardly moved from its
@@ -738,6 +755,10 @@ def profile_likelihood_ci(hist, T_s: float, r_hat: float,
         raise ValueError(f"level must lie in (0, 1); got {level}")
     if int(n_grid) < 3:
         raise ValueError("n_grid must be at least 3")
+    # from 0.16.0; up to 0.15.0 g2_max <= 0 gave a grid of zeros and an
+    # interval of NaN without a word
+    if not float(g2_max) > 0.0:
+        raise ValueError(f"g2_max must be positive; got {g2_max!r}")
 
     s_pair = np.sqrt(2.0) * float(cfg.sigma_irf)
     # sum(h log h - h): subtracting it makes the objective half the
@@ -747,19 +768,59 @@ def profile_likelihood_ci(hist, T_s: float, r_hat: float,
     pos = hist > 0
     nll_offset = float(np.sum(hist[pos] * np.log(hist[pos])) - hist.sum())
 
-    def nll_free(theta, g2):
-        """theta = (log tau1, log tau2, a, log c0) (from 0.12.0; up to
-        0.11.0 the lifetimes and c0 were searched in natural units, in
-        which the optimizer moved tau2 hardly at all from its start)."""
-        t1, t2, a, c0 = np.exp(theta[0]), np.exp(theta[1]), theta[2], \
-            np.exp(theta[3])
+    H = float(hist.sum())
+    c0_lo, c0_hi = 0.01, 10.0
+    h_step = 1e-5                     # step in log tau for dE/dlog tau
+
+    def blur(t):
+        return _exp_conv_gauss(tau, t, s_pair) @ wts
+
+    def c0_best(S):
+        """The c0 in [0.01, 10] that minimizes the NLL for a shape whose
+        mean counts at c0 = 1 add up to S: H / S, or with the prior the
+        positive root of c0^2 + (S sd^2 - m) c0 - H sd^2 = 0. The NLL is
+        convex in c0, so the best c0 within the limits is the root moved
+        onto the nearer limit."""
+        if c0_prior is None:
+            c = H / S
+        else:
+            b = S * c0_sd ** 2 - c0_m
+            disc = np.sqrt(b * b + 4.0 * H * c0_sd ** 2)
+            c = (2.0 * H * c0_sd ** 2 / (b + disc) if b >= 0.0
+                 else 0.5 * (disc - b))
+        return float(np.clip(c, c0_lo, c0_hi))
+
+    def nll_c0(theta, g2, grad=True):
+        """The NLL at theta = (log tau1, log tau2, a) and fixed g2, with
+        the flat-level scale c0 at its best value (from 0.16.0; up to
+        0.15.0 c0 was a fourth searched parameter and the gradient came
+        from finite differences of the NLL, which took four times as
+        long for the same minima). Returns (nll, gradient, c0). At the
+        best c0 a small change of c0 leaves the NLL unchanged, so the
+        gradient is that at fixed c0; dE/dlog tau is taken by central
+        differences."""
+        t1, t2, a = np.exp(theta[0]), np.exp(theta[1]), float(theta[2])
         rho2 = 1.0 - g2                      # fixed by the profiled g2
-        mu = flat * c0 * (1.0 - rho2 * (((1.0 + a) * _exp_conv_gauss(tau, t1, s_pair)
-                                         - a * _exp_conv_gauss(tau, t2, s_pair)) @ wts))
+        E1, E2 = blur(t1), blur(t2)
+        m = flat * (1.0 - rho2 * ((1.0 + a) * E1 - a * E2))
+        c0 = c0_best(max(float(m.sum()), 1e-300))
+        mu = c0 * m
         nll = _poisson_nll(hist, mu) + nll_offset
         if c0_prior is not None:
             nll += 0.5 * ((c0 - c0_m) / c0_sd) ** 2
-        return nll
+        if not grad:
+            return nll, None, c0
+        # d nll / d m_k at fixed c0 (0 where the mean is held at 1e-12)
+        live = mu > 1e-12
+        w = np.where(live, c0 * (1.0 - hist / np.where(live, mu, 1.0)),
+                     0.0)
+        e = np.exp(h_step)
+        d1 = (blur(t1 * e) - blur(t1 / e)) / (2.0 * h_step)
+        d2 = (blur(t2 * e) - blur(t2 / e)) / (2.0 * h_step)
+        g = -flat * rho2 * np.array([w @ ((1.0 + a) * d1),
+                                     -(w @ (a * d2)),
+                                     w @ (E1 - E2)])
+        return nll, g, c0
 
     if isinstance(t1_bounds, str) or isinstance(t2_bounds, str):
         # "auto": take the windows an automatically widened fit ends with
@@ -782,14 +843,11 @@ def profile_likelihood_ci(hist, T_s: float, r_hat: float,
     c0g = max(float(np.median(hist)) / max(flat, 1e-12), 0.1)
     t1_gm = float(np.sqrt(t1_lo * t1_hi))
     t2_gm = float(np.sqrt(t2_lo * t2_hi))
-    log_lo = np.array([np.log(t1_lo), np.log(t2_lo), 0.0, np.log(0.01)])
-    log_hi = np.array([np.log(t1_hi), np.log(t2_hi), 3.0, np.log(10.0)])
+    log_lo = np.array([np.log(t1_lo), np.log(t2_lo), 0.0])
+    log_hi = np.array([np.log(t1_hi), np.log(t2_hi), 3.0])
 
     def _to_log(x):
-        return np.array([np.log(x[0]), np.log(x[1]), x[2], np.log(x[3])])
-
-    def _from_log(y):
-        return np.array([np.exp(y[0]), np.exp(y[1]), y[2], np.exp(y[3])])
+        return np.array([np.log(x[0]), np.log(x[1]), x[2]])
 
     def _profile(g2, warm_x):
         """Minimum of the NLL over the nuisance parameters at fixed g2,
@@ -801,12 +859,17 @@ def profile_likelihood_ci(hist, T_s: float, r_hat: float,
             starts.insert(0, warm_x)
         best = None
         for x0 in starts:
-            y0 = np.clip(_to_log(np.clip(x0, lo_b, hi_b)), log_lo, log_hi)
-            res = minimize(nll_free, y0, args=(g2,), method="L-BFGS-B",
+            y0 = np.clip(_to_log(np.clip(x0, lo_b, hi_b)[:3]), log_lo,
+                         log_hi)
+            res = minimize(lambda y: nll_c0(y, g2)[:2], y0, jac=True,
+                           method="L-BFGS-B",
                            bounds=list(zip(log_lo, log_hi)))
             if best is None or res.fun < best.fun:
                 best = res
-        return float(best.fun), _from_log(best.x)
+        y = best.x
+        c0 = nll_c0(y, g2, grad=False)[2]
+        return float(best.fun), np.array([np.exp(y[0]), np.exp(y[1]),
+                                          y[2], c0])
 
     for i, g2 in enumerate(grid):
         prof[i], xs[i] = _profile(g2, warm)

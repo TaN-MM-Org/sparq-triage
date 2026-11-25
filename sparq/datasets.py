@@ -204,10 +204,10 @@ def rebin_real(delay, hist, cfg=CFG, center=None, method="split",
     the grid bins it overlaps in proportion to the overlap. Total counts
     are kept exactly; a flat input gives a flat output for any ratio of
     bin widths, and the zero-delay grid bin is centered on `center`.
-    The input bin edges are the midpoints between neighbouring delays
+    The input bin edges are the midpoints between neighboring delays
     (the delays are taken to be bin centers), so the grid need not be
     uniform. A split histogram is no longer made of independent
-    Poisson counts: neighbouring grid bins share input bins, and a
+    Poisson counts: neighboring grid bins share input bins, and a
     grid bin's counts vary less than Poisson counts of the same mean.
     The bootstrap of `analyze_histogram` redraws the INPUT counts, so
     its interval includes this.

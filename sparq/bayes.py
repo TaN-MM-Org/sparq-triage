@@ -155,8 +155,13 @@ class G2Posterior:
 
     def prob_below(self, threshold=0.5):
         """P[g < threshold | data] -- the single-emitter verdict
-        probability at the conventional threshold 1/2."""
-        return float(self.cdf(threshold))
+        probability at the conventional threshold 1/2. A threshold that
+        is not a finite number is refused (from 0.16.0; up to 0.15.0 NaN
+        gave 0)."""
+        t = float(threshold)
+        if not np.isfinite(t):
+            raise ValueError("threshold must be a finite number")
+        return float(self.cdf(t))
 
 
 def bayesian_g2(hist, cfg: HBTConfig | None = None, prior=(0.5, 0.0),
@@ -196,8 +201,11 @@ def bayesian_g2(hist, cfg: HBTConfig | None = None, prior=(0.5, 0.0),
         raise ValueError("counts must be finite and nonnegative")
     m0, mr = _windows(cfg, n_center_bins, lo_frac)
     a, b = float(prior[0]), float(prior[1])
-    if a <= 0.0 or b < 0.0:
-        raise ValueError("prior must have shape a > 0 and rate b >= 0")
+    # NaN or infinite values are refused too (from 0.16.0; up to 0.15.0
+    # they passed and every result was NaN or 0)
+    if not (np.isfinite(a) and np.isfinite(b) and a > 0.0 and b >= 0.0):
+        raise ValueError("prior must have finite shape a > 0 and rate "
+                         "b >= 0")
     k0 = float(y[m0].sum())
     kr = float(y[mr].sum())
     n0 = int(m0.sum())

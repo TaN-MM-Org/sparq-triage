@@ -30,6 +30,10 @@ Core, dependency-light API (NumPy/SciPy only) re-exported here:
 * lifetime fits with a measured instrument response
   (`fit_lifetime(irf=...)`) and a profile-likelihood interval for g2(0)
   under any dip model (`fit_model(level=...)`), new in 0.15.0.
+* saturation intervals for counts that scatter more than Poisson
+  counts (`fit_saturation(overdispersion=True)`) and stationarity
+  p-values by simulation for few counts
+  (`check_stationarity(method="monte_carlo")`), new in 0.16.0.
 
 The machine-learning components require PyTorch (install the ``ml``
 extra: ``pip install sparq-triage[ml]``) and are imported explicitly:
@@ -91,7 +95,7 @@ from .sequential import WindowSPRT, check_stationarity
 from .timetags import (correlate_start_stop, load_timetags_csv,
                        normalize_g2, save_timetags_csv)
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 __all__ = [
     "DetectorImpairments", "EmitterSite", "HBTConfig", "PLATFORMS",

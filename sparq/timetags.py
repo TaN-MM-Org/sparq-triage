@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .physics import HBTConfig, correlate
+from .physics import HBTConfig, _exact_counts, correlate
 
 __all__ = ["load_timetags_csv", "save_timetags_csv",
            "correlate_start_stop", "normalize_g2"]
@@ -104,7 +104,9 @@ def correlate_start_stop(t_a, t_b, cfg: HBTConfig) -> np.ndarray:
     which has no pile-up distortion. The tests assert exact agreement
     with `correlate` on streams sparse enough that no window holds
     two stops, and the elementwise undercount otherwise. Times that are
-    not finite are refused (new in 0.13.0).
+    not finite are refused (new in 0.13.0). The counts are float32, or
+    float64 when a bin holds more than 2^24 pairs, as in `correlate`
+    (from 0.16.0; up to 0.15.0 such a bin was rounded to float32).
     """
     t_a = np.asarray(t_a, dtype=float)
     t_b = np.asarray(t_b, dtype=float)
@@ -126,7 +128,7 @@ def correlate_start_stop(t_a, t_b, cfg: HBTConfig) -> np.ndarray:
     # Python loop; the same histogram as the 0.12.1 loop, tested)
     h, _ = np.histogram(t_b[lo[has]] - t_a[has], bins=cfg.n_bins,
                         range=(-cfg.tau_max, cfg.tau_max))
-    return h.astype(np.float32)
+    return _exact_counts(h)
 
 
 def normalize_g2(hist, n_a, n_b, T_s, cfg: HBTConfig):
@@ -152,8 +154,10 @@ def normalize_g2(hist, n_a, n_b, T_s, cfg: HBTConfig):
     if np.any(h < 0) or not np.all(np.isfinite(h)):
         raise ValueError("hist must be finite and non-negative")
     na, nb, T = float(n_a), float(n_b), float(T_s)
-    if not (na > 0 and nb > 0):
-        raise ValueError("n_a and n_b must be positive counts")
+    # finite counts only (from 0.16.0; up to 0.15.0 an infinite count
+    # gave g2 = 0 in every bin)
+    if not (na > 0 and nb > 0 and np.isfinite(na) and np.isfinite(nb)):
+        raise ValueError("n_a and n_b must be positive, finite counts")
     if not (T > 0 and np.isfinite(T)):
         raise ValueError("T_s must be a positive acquisition time in s")
     acc = na * nb * (cfg.bin_width * 1e-9) / T     # accidentals per bin

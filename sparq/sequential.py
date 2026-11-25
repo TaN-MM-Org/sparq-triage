@@ -34,7 +34,9 @@ with mu' the per-second means, and E1[tau] ~ ((1-beta) A + beta B) / D1
 
 Both tests, and every fixed-time analysis, assume that the source does
 not change while it is measured. `check_stationarity` (new in 0.12.0)
-tests that assumption on a series of snapshots before they are summed.
+tests that assumption on a series of snapshots before they are summed;
+from 0.16.0 also for snapshots with few counts, with p-values by
+simulation (`method="monte_carlo"`).
 """
 from __future__ import annotations
 
@@ -164,8 +166,11 @@ class WindowSPRT:
                  lo_frac: float = 0.65):
         if not (0 < alpha < 1 and 0 < beta < 1):
             raise ValueError("alpha and beta must lie in (0, 1)")
-        if not (0.0 < g_accept < g_reject):
-            raise ValueError("need 0 < g_accept < g_reject")
+        # finite values only (from 0.16.0): up to 0.15.0 g_reject = inf
+        # was accepted, the evidence became NaN and the test never
+        # decided
+        if not (0.0 < g_accept < g_reject < np.inf):
+            raise ValueError("need 0 < g_accept < g_reject, both finite")
         self.cfg = HBTConfig() if cfg is None else cfg
         if self.cfg.n_bins % 2 == 0:
             raise ValueError("cfg.n_bins must be odd (a bin centered at 0)")
@@ -240,30 +245,106 @@ def _pearson(observed, expected):
     return float(np.sum((observed - expected) ** 2 / expected))
 
 
-def _homogeneity(table, min_expected, what):
+def _homogeneity(table, min_expected, what, mc=None):
     """Pearson chi-square test that every row of a (J, K) table of
     counts has the same shape (the rows may have any totals): expected
-    count R_j C_k / N, dof (J - 1)(K - 1)."""
+    count R_j C_k / N, dof (J - 1)(K - 1).
+
+    mc = (n_sim, rng) (new in 0.16.0): the p-value is found by
+    simulation instead of from the chi-square law, from n_sim tables
+    with the same row and column sums drawn from their exact law under
+    the hypothesis (`_tables_with_margins`); no smallest expected count
+    is then needed. Rows and columns without counts are left out (they
+    hold no information once the sums are fixed)."""
     from scipy.stats import chi2
+    if mc is not None:
+        table = table[table.sum(axis=1) > 0][:, table.sum(axis=0) > 0]
     R = table.sum(axis=1)
     C = table.sum(axis=0)
     N = float(table.sum())
     E = np.outer(R, C) / N
-    if E.min() < min_expected:
-        raise ValueError(
-            f"the {what} test needs at least {min_expected:g} expected "
-            f"counts in every cell; the smallest is {E.min():.3g}: merge "
-            "neighboring snapshots or measure longer")
-    stat = _pearson(table, E)
     dof = (table.shape[0] - 1) * (table.shape[1] - 1)
-    return stat, dof, float(chi2.sf(stat, dof))
+    if mc is None:
+        if E.min() < min_expected:
+            raise ValueError(
+                f"the {what} test needs at least {min_expected:g} expected "
+                f"counts in every cell; the smallest is {E.min():.3g}: "
+                "merge neighboring snapshots, measure longer, or use "
+                "method='monte_carlo'")
+        stat = _pearson(table, E)
+        return stat, dof, float(chi2.sf(stat, dof))
+    if dof == 0:                 # one row or one column with counts
+        return 0.0, 0, 1.0
+    stat = _pearson(table, E)
+    n_sim, rng = mc
+    sims = _tables_with_margins(R, C, n_sim, rng)
+    s_sim = np.sum((sims - E) ** 2 / E, axis=(1, 2))
+    return stat, dof, _mc_p_value(stat, s_sim)
+
+
+def _rate_test(n, t, min_expected, mc=None):
+    """Pearson test that the totals n_j are in proportion to the times
+    t_j: (statistic, p-value). Given N = sum n the totals are
+    multinomial with shares t_j / sum(t) under the hypothesis. With
+    mc = (n_sim, rng) (new in 0.16.0) the p-value comes from n_sim
+    multinomial draws instead of the chi-square law with J - 1 degrees
+    of freedom."""
+    from scipy.stats import chi2
+    N = float(n.sum())
+    e = N * t / t.sum()
+    if mc is None and e.min() < min_expected:
+        raise ValueError(
+            f"the rate test needs at least {min_expected:g} expected "
+            f"counts per snapshot; the smallest is {e.min():.3g} (or use "
+            "method='monte_carlo')")
+    stat = _pearson(n, e)
+    if mc is None:
+        return stat, float(chi2.sf(stat, n.size - 1))
+    sims = mc[1].multinomial(int(N), t / t.sum(), size=mc[0])
+    return stat, _mc_p_value(stat, np.sum((sims - e) ** 2 / e, axis=1))
+
+
+def _mc_p_value(stat, s_sim):
+    """(1 + number of simulated statistics at least as large) /
+    (1 + number simulated): a p-value that is never 0, and for which
+    P[p <= u] <= u holds exactly under the hypothesis. Statistics within
+    1e-9 (relative) of the observed one count as equal, so that ties
+    that differ only by rounding are counted."""
+    tol = 1e-9 * max(1.0, abs(stat))
+    return float((1 + np.sum(s_sim >= stat - tol)) / (1 + s_sim.size))
+
+
+def _tables_with_margins(R, C, n_sim, rng):
+    """n_sim random (J, K) tables of whole counts with row sums R and
+    column sums C, each drawn from the exact law of such a table when
+    every row has the same shape (the multiple hypergeometric law,
+    P = prod R_j! prod C_k! / (N! prod x_jk!)): the rows are drawn one
+    after another, each from the counts that the earlier rows left in
+    every column (NumPy's multivariate_hypergeometric)."""
+    R = np.asarray(R).astype(np.int64)
+    C = np.asarray(C).astype(np.int64)
+    J, K = R.size, C.size
+    out = np.empty((n_sim, J, K), dtype=np.int64)
+    out[:, 0, :] = rng.multivariate_hypergeometric(C, int(R[0]),
+                                                   size=n_sim)
+    if J == 2:
+        out[:, 1, :] = C[None, :] - out[:, 0, :]
+        return out
+    for i in range(n_sim):
+        rem = C - out[i, 0]
+        for j in range(1, J - 1):
+            out[i, j] = rng.multivariate_hypergeometric(rem, int(R[j]))
+            rem = rem - out[i, j]
+        out[i, J - 1] = rem
+    return out
 
 
 def check_stationarity(snapshots, durations=None,
                        cfg: HBTConfig | None = None,
                        n_center_bins: int = 1, lo_frac: float = 0.65,
                        min_expected: float = 5.0,
-                       alpha: float = 0.01) -> dict:
+                       alpha: float = 0.01, method: str = "chi2",
+                       n_sim: int = 2000, seed: int = 0) -> dict:
     """Are successive histograms of one site consistent with a source
     that did not change while it was measured? (new in 0.12.0)
 
@@ -298,19 +379,35 @@ def check_stationarity(snapshots, durations=None,
       `min_expected`; dof (J - 1)(K - 1).
 
     The chi-square law of the statistics holds when the expected counts
-    are not small; a rate or window test with an expected count below
-    `min_expected` (default 5) is refused with ValueError (merge
-    snapshots or measure longer). `consistent` is True when all three
-    p-values are at least alpha / 3, so that a steady source is called
-    inconsistent with probability at most about alpha (Bonferroni).
+    are not small; with method="chi2" (the default) a rate or window
+    test with an expected count below `min_expected` (default 5) is
+    refused with ValueError (merge snapshots or measure longer).
+    `consistent` is True when all three p-values are at least
+    alpha / 3, so that a steady source is called inconsistent with
+    probability at most about alpha (Bonferroni).
+
+    method="monte_carlo" (new in 0.16.0) needs no smallest expected
+    count: each p-value comes from `n_sim` simulated series with the
+    same totals, drawn from the exact law of the counts given those
+    totals when the source is steady (the snapshot totals from the
+    multinomial law with shares t_j / sum(t); the window and shape
+    tables from the multiple hypergeometric law of a table with fixed
+    row and column sums), as the share of simulated statistics at least
+    as large as the measured one, (1 + count) / (1 + n_sim). Such a
+    p-value is valid at any count: a steady source gets p <= u with
+    probability at most u. It is random to within about
+    sqrt(p (1 - p) / n_sim) (`seed` fixes it) and never below
+    1 / (1 + n_sim). The counts must then be whole numbers. Bins are
+    merged for the shape test as with "chi2" (rows or columns without
+    counts are left out); with too few counts for two merged bins the
+    shape test is still refused.
 
     Returns a dict: rate_p, rate_chi2, rate_dof, window_p, window_chi2,
     window_dof, shape_p, shape_chi2, shape_dof, shape_bins (the number
     of merged bins), rate_cps (coincidences per second in each
     snapshot), g2_window (each snapshot's window g2, NaN without
-    reference counts), alpha and consistent.
+    reference counts), alpha, consistent and (new in 0.16.0) method.
     """
-    from scipy.stats import chi2
     cfg = HBTConfig() if cfg is None else cfg
     S = np.asarray(snapshots, dtype=float)
     if S.ndim != 2 or S.shape[0] < 2 or S.shape[1] != cfg.n_bins:
@@ -329,6 +426,16 @@ def check_stationarity(snapshots, durations=None,
         raise ValueError("min_expected must be positive")
     if not (0.0 < alpha < 1.0):
         raise ValueError("alpha must lie in (0, 1)")
+    if method not in ("chi2", "monte_carlo"):
+        raise ValueError("method must be 'chi2' or 'monte_carlo'")
+    mc = None
+    if method == "monte_carlo":
+        if isinstance(n_sim, bool) or not (
+                isinstance(n_sim, (int, np.integer)) and n_sim >= 1):
+            raise ValueError("n_sim must be a whole number >= 1")
+        if np.any(S != np.floor(S)):
+            raise ValueError("method='monte_carlo' needs whole counts")
+        mc = (int(n_sim), np.random.default_rng(seed))
     if cfg.n_bins % 2 == 0:
         raise ValueError("cfg.n_bins must be odd (a bin centered at 0)")
     if n_center_bins < 1 or n_center_bins % 2 == 0:
@@ -344,18 +451,12 @@ def check_stationarity(snapshots, durations=None,
     if N <= 0:
         raise ValueError("the snapshots hold no counts")
     # rate
-    e = N * t / t.sum()
-    if e.min() < min_expected:
-        raise ValueError(
-            f"the rate test needs at least {min_expected:g} expected "
-            f"counts per snapshot; the smallest is {e.min():.3g}")
-    rate_stat = _pearson(n, e)
-    rate_p = float(chi2.sf(rate_stat, J - 1))
+    rate_stat, rate_p = _rate_test(n, t, min_expected, mc)
     # window g2
     k0 = S[:, m0].sum(axis=1)
     kr = S[:, mr].sum(axis=1)
     win_stat, win_dof, win_p = _homogeneity(np.column_stack([k0, kr]),
-                                            min_expected, "window")
+                                            min_expected, "window", mc)
     with np.errstate(divide="ignore", invalid="ignore"):
         g_win = np.where(kr > 0, (k0 / m0.sum()) / (kr / mr.sum()), np.nan)
     # shape: merge neighboring bins until every expected count is large
@@ -378,10 +479,11 @@ def check_stationarity(snapshots, durations=None,
                          "the bins do not reach min_expected; merge "
                          "snapshots or measure longer")
     table = np.column_stack([S[:, g].sum(axis=1) for g in groups])
-    shp_stat, shp_dof, shp_p = _homogeneity(table, min_expected, "shape")
+    shp_stat, shp_dof, shp_p = _homogeneity(table, min_expected, "shape",
+                                            mc)
     consistent = bool(min(rate_p, win_p, shp_p) >= alpha / 3.0)
     return dict(rate_p=rate_p, rate_chi2=rate_stat, rate_dof=J - 1,
                 window_p=win_p, window_chi2=win_stat, window_dof=win_dof,
                 shape_p=shp_p, shape_chi2=shp_stat, shape_dof=shp_dof,
                 shape_bins=len(groups), rate_cps=n / t, g2_window=g_win,
-                alpha=float(alpha), consistent=consistent)
+                alpha=float(alpha), consistent=consistent, method=method)

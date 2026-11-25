@@ -54,14 +54,28 @@ def site_from_numbers(tau1_ns, tau2_ns, a, rate_kcps, rho=1.0,
         raise ValueError("a must be finite and >= 0")
     if not (0.0 < rho <= 1.0):
         raise ValueError("rho must lie in (0, 1]")
-    if not (isinstance(n_emitters, (int, np.integer))
-            and n_emitters >= 1):
+    if isinstance(n_emitters, (bool, np.bool_)) or not (
+            isinstance(n_emitters, (int, np.integer)) and n_emitters >= 1):
         raise ValueError("n_emitters must be an integer >= 1")
     return EmitterSite(params=dict(tau1=float(tau1_ns),
                                    tau2=float(tau2_ns), a=float(a),
                                    rate_kcps=float(rate_kcps),
                                    rho=float(rho), blinking=False),
                        n_emitters=int(n_emitters))
+
+
+def _check_threshold(threshold):
+    """The g2 threshold must be a positive, finite number (from 0.16.0;
+    up to 0.15.0 a NaN threshold gave a verdict probability of 0 and a
+    misleading refusal from the planners)."""
+    try:
+        t = float(threshold)
+    except (TypeError, ValueError):
+        raise ValueError("threshold must be a positive number") from None
+    if not (np.isfinite(t) and t > 0.0):
+        raise ValueError(f"threshold must be positive and finite; got "
+                         f"{threshold!r}")
+    return t
 
 
 def expected_posterior(site, T_s, cfg=None, threshold=0.5,
@@ -78,6 +92,7 @@ def expected_posterior(site, T_s, cfg=None, threshold=0.5,
         cfg = HBTConfig()
     if not (np.isfinite(T_s) and T_s > 0.0):
         raise ValueError("T_s must be finite and positive (seconds)")
+    _check_threshold(threshold)
     mu = expected_histogram(site, float(T_s), cfg)
     post = bayesian_g2(mu, cfg, n_center_bins=n_center_bins,
                        lo_frac=lo_frac)
@@ -183,9 +198,11 @@ def certification_probability(site, T_s, confidence=0.95, threshold=0.5,
         raise ValueError("confidence must lie in (0, 1)")
     if not (np.isfinite(T_s) and T_s > 0.0):
         raise ValueError("T_s must be finite and positive (seconds)")
+    _check_threshold(threshold)
     a, b = float(prior[0]), float(prior[1])
-    if a <= 0.0 or b < 0.0:
-        raise ValueError("prior must have shape a > 0 and rate b >= 0")
+    if not (np.isfinite(a) and np.isfinite(b) and a > 0.0 and b >= 0.0):
+        raise ValueError("prior must have finite shape a > 0 and rate "
+                         "b >= 0")
     mu0, mur, n0, nr = _window_means(site, T_s, cfg, n_center_bins,
                                      lo_frac)
     kr_lo = int(poisson.ppf(0.5 * tail, mur))
